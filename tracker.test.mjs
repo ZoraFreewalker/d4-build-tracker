@@ -45,6 +45,23 @@ test('item power, game deltas and affix values are read from tooltip text', () =
   assert.equal(affixValue(body, '+5% Attack Speed'), null);
 });
 
+test('one tooltip line counts for one build affix (screenshot: Death Garb vs Vigorous Leather Doublet)', () => {
+  const phase = { slots: { ChestArmor: { unique: false, aspects: [], name: 'Runic Mail',
+    affixes: [{ text: '30 Strength' }, { text: '+115 Maximum Life' }, { text: '3 Fury Regeneration' }, { text: '+1101 Armor' }, { text: '+228 Resistance to All Elements' }],
+    tempered: [{ text: '+1500 Maximum Life' }] } } };
+  const doublet = { slotType: 'ChestArmor', name: 'VIGOROUS LEATHER DOUBLET OF REGENERATION', power: 102, deltas: {},
+    body: '102 Item Power +1 Maximum Life [1 - 4] +1 Life Regeneration [1]' };
+  const garb = { slotType: 'ChestArmor', name: 'DEATH GARB', power: 140, deltas: { toughness: 3.2 },
+    body: '140 Item Power +2 Strength +[1 - 7] (+2) +2 Maximum Resource [1 - 5] (+2) 1.3% Resource Cost Reduction [1.0 - 2.0]% (+1.3%)' };
+  const d = compare(doublet, phase);
+  assert.deepEqual(d.affixes.filter(a => a.ok).map(a => a.text), ['+115 Maximum Life']); // not also the temper
+  assert.equal(d.score, 20);
+  assert.equal(compare(garb, phase).score, 20);
+  assert.equal(verdict(garb, doublet, phase).kind, 'upgrade');
+  // two real "Maximum Life" lines do satisfy affix and temper
+  assert.equal(compare({ ...doublet, body: '+115 Maximum Life +1500 Maximum Life' }, phase).score, 40);
+});
+
 test('upgrade verdict combines game deltas, build fit, values and item power', () => {
   const phase = { slots: { Legs: { unique: false, aspects: [], tempered: [], affixes: [{ text: '30 Strength' }, { text: '+115 Maximum Life' }] } } };
   const item = (body, extra = {}) => ({ slotType: 'Legs', name: 'x', body, power: 500, deltas: {}, ...extra });

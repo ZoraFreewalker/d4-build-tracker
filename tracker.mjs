@@ -148,6 +148,15 @@ export function hasText(body, text) {
   return want.filter(w => set.has(w)).length / want.length >= 0.8;
 }
 
+// how many times a short affix phrase occurs in the tooltip (long aspect texts: 0 or 1)
+export function countText(body, text) {
+  const want = words(text);
+  if (want.length > 6) return hasText(body, text) ? 1 : 0;
+  if (!want.length) return 0;
+  // whole-word phrase; lookarounds so back-to-back repeats ("maximum life maximum life") both count
+  return (words(body).join(' ').match(new RegExp(`(?<=^| )${want.join(' ')}(?= |$)`, 'g')) ?? []).length;
+}
+
 // slots that take the same kind of weapon (e.g. the Barbarian arsenal: any 1H weapon fits a dual-wield slot)
 const WEAPON_ROLE = {
   Axe: '1h', Sword: '1h', Mace: '1h', Flail: '1h', Dagger: '1h', Scythe: '1h', Wand: '1h',
@@ -170,8 +179,17 @@ export function compare(tooltip, phase) {
     const item = s.unique
       ? similar(tooltip.name, s.name ?? '')
       : s.aspects.length ? s.aspects.some(a => hasText(tooltip.body, a.text)) : null;
+    // one tooltip line satisfies one build affix: "+1 Maximum Life" can't count as both the affix and the
+    // "+1500 Maximum Life" temper. Regular affixes go first, a temper needs a line of its own.
+    const used = {};
+    const take = text => {
+      const key = words(text).join(' ');
+      if (countText(tooltip.body, text) <= (used[key] ?? 0)) return false;
+      used[key] = (used[key] ?? 0) + 1;
+      return true;
+    };
     const affixes = [...s.affixes, ...s.tempered.map(a => ({ ...a, tempered: true }))]
-      .map(a => ({ text: a.text, tempered: !!a.tempered, ok: hasText(tooltip.body, a.text) }));
+      .map(a => ({ text: a.text, tempered: !!a.tempered, ok: take(a.text) }));
     // Maxroll lists more affixes than fit on a non-unique item (max 4), so cap both counts at 4
     const cap = n => Math.min(n, MAX_AFFIXES);
     const regular = affixes.filter(a => !a.tempered), tempered = affixes.filter(a => a.tempered);
