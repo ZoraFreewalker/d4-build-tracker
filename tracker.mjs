@@ -67,6 +67,36 @@ export function affixValue(body, affixText) {
   return nums ? num(nums.at(-1)) : null;
 }
 
+// Tooltip rows -> one entry per affix with the game's own difference: "+2 Strength +[1 - 7] (+2)" ->
+// { text: '+2 Strength', delta: '+2' }. Wrapped rows ("2.0]% (+1.3%)") are joined to the affix above.
+const BASE_ROW = /item power|damage per second|damage per hit|attacks per second|^upgrades|quality$|^[\d,.]+\s+(armor|all resist)\b/i;
+const NEW_AFFIX = /^[+\-x×]?\d[\d,.]*%?\s+[a-z]/i;
+// Rows may carry x/h: wrapped lines are indented past the bullets, which separates them from new affixes.
+export function affixEntries(rows) {
+  const items = rows.map(r => (typeof r === 'string' ? { text: r } : r));
+  const bulletX = Math.min(...items.filter(r => r.x != null).map(r => r.x), Infinity);
+  const entries = [];
+  for (const { text: raw, x, h = 20 } of items) {
+    if (/\(\d+\s*\/\s*\d+\)/.test(raw)) break; // rune/socket block ("(50/300)") follows the affixes
+    const bullet = /^[o0*•◆·]\s+/i.test(raw) || (x != null && x <= bulletX + h * 0.5);
+    const row = raw.replace(/^[o0*•◆·]\s+/i, '').trim();
+    if (!row || BASE_ROW.test(row)) continue;
+    const prev = entries.at(-1);
+    const sentenceDone = prev && /[.%\])]$/.test(prev.raw) && /^[A-Z]/.test(row);
+    if (prev && !bullet && !NEW_AFFIX.test(row) && !sentenceDone) prev.raw += ` ${row}`;
+    else entries.push({ raw: row });
+  }
+  return entries.map(({ raw }) => {
+    const delta = /\(\s*([+\-−–]\s*\d[\d,.]*%?)\s*\)\s*$/.exec(raw)?.[1].replace(/\s/g, '').replace(/[−–]/, '-') ?? null;
+    const text = raw.replace(/\(\s*[+\-−–]\s*\d[\d,.]*%?\s*\)\s*$/, '')
+      .replace(/\+?\s*\[[^\]]*\]?\s*%?/g, ' ')
+      // value ranges whose brackets OCR read as "1" or dropped: "+[1 - 7]" -> "+11 - 71" / "- 71"
+      .replace(/\s\+?\d*[\d.,]*\s*[-–]\s*\d[\d.,]*\]?%?(?=\s|$)/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    return { text, delta };
+  }).filter(e => e.text.length > 2);
+}
+
 // tooltip text from these lines on is not about the item's stats (footer, flavor text)
 const TOOLTIP_END = /^(sell value|durability|requires level|account bound|unequip|equip$|mark as|drops from|right click|empty socket|properties lost|compare other slot|["“'])/i;
 // weapon type lines carry the damage kind: "Magic Mace (Bludgeoning)" -> "Magic Mace"
@@ -91,7 +121,7 @@ export function parseTooltips(lines) {
     for (const l of lines
       .filter(l => l.y < head.y && l.y > head.y - head.h * 9 && l.x < head.x + head.w && l.x + l.w > head.x && !/equipped/i.test(l.text))
       .sort((a, b) => b.y - a.y)) {
-      if ((nameLines[0]?.y ?? head.y) - l.y > head.h * 2.6) break;
+      if ((nameLines[0]?.y ?? head.y) - l.y > Math.max(head.h, l.h) * 2.6) break; // name font is taller than the type line
       nameLines.unshift(l);
     }
     const left = Math.min(head.x, ...nameLines.map(l => l.x)) - 45;
@@ -109,7 +139,22 @@ export function parseTooltips(lines) {
     const firstRows = body.slice(0, 5).map(l => l.y);
     const top = lines.filter(l => l.x >= left && l.x < nextX - 45 && firstRows.some(y => Math.abs(l.y - y) < head.h))
       .sort((a, b) => a.y - b.y || a.x - b.x).map(l => l.text).join(' ');
+    // full rows (colored deltas like "(+2)" can be separate OCR fragments to the right)
+    const rows = (y0, y1) => {
+      const inRange = lines.filter(l => l.x >= left && l.x < nextX - 45 && l.y > y0 && l.y < y1).sort((a, b) => a.y - b.y || a.x - b.x);
+      const out = [];
+      for (const l of inRange) {
+        const row = out.at(-1);
+        if (row && Math.abs(row.y - l.y) < head.h * 0.6) row.text += ` ${l.text}`; else out.push({ y: l.y, x: l.x, h: head.h, text: l.text });
+      }
+      return out.map(r => ({ ...r, text: r.text.trim() }));
+    };
+    const lostAt = lines.find(l => l.y > head.y && l.x >= left && l.x < nextX - 45 && /^properties lost/i.test(l.text.trim()));
+    const lostEnd = Math.min(...lines.filter(l => lostAt && l.y > lostAt.y && l.x >= left && l.x < nextX - 45
+      && TOOLTIP_END.test(l.text.trim()) && !/^properties lost/i.test(l.text.trim())).map(l => l.y), Infinity);
     return {
+      affixLines: affixEntries(rows(body[0] ? body[0].y - 1 : head.y, endY)),
+      lost: lostAt ? affixEntries(rows(lostAt.y, lostEnd)).map(a => a.text) : [],
       name: nameLines.map(l => l.text).join(' ').replace(/[^a-z' -]/gi, ' ').replace(/\s+/g, ' ').trim(),
       rarity: m[2].toLowerCase(),
       ancestral: !!m[1],
@@ -279,7 +324,19 @@ export function verdict(hovered, equipped, phase) {
     const d = hovered.power - equipped.power;
     if (Math.abs(d) >= 25) add(0.5, d, `${d > 0 ? '+' : ''}${d} item power`);
   }
-  if (!pos.length && !neg.length) return { kind: equipped || h ? 'equal' : 'unknown', pos, neg };
+  // what the item adds and takes away, as the game itself lists it; ★ = a stat this build uses
+  const slot = h && phase.slots[h.slot.split(', ')[0]];
+  const wanted = slot ? [...slot.affixes, ...slot.tempered, ...slot.aspects].map(a => a.text) : [];
+  const forBuild = text => wanted.some(w => countText(text, w) > 0);
+  const gains = (hovered.affixLines ?? []).map(a => ({ ...a, build: forBuild(a.text) }));
+  const losses = (hovered.lost ?? []).map(text => ({ text, build: forBuild(text) }));
+  // in compare mode the game marks new/higher stats with a "(+…)" and lists what you'd lose
+  const comparing = losses.length || gains.some(g => g.delta);
+  if (comparing) {
+    const up = gains.filter(g => g.delta && !g.delta.startsWith('-')).length;
+    add(0.5, up - losses.length, `${up} eigenschap${up === 1 ? '' : 'pen'} erbij of hoger, ${losses.length} kwijt`);
+  }
+  if (!pos.length && !neg.length) return { kind: equipped || h ? 'equal' : 'unknown', pos, neg, gains, losses };
   const kind = !neg.length ? 'upgrade' : !pos.length ? 'downgrade' : total > 0.5 ? 'upgrade' : total < -0.5 ? 'downgrade' : 'sidegrade';
-  return { kind, pos, neg };
+  return { kind, pos, neg, gains, losses };
 }

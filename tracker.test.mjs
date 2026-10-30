@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict } from './tracker.mjs';
+import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries } from './tracker.mjs';
 
 
 test('weapon tooltips: "(Bludgeoning)" type, DPS delta, lost properties (real OCR)', () => {
@@ -60,6 +60,20 @@ test('one tooltip line counts for one build affix (screenshot: Death Garb vs Vig
   assert.equal(verdict(garb, doublet, phase).kind, 'upgrade');
   // two real "Maximum Life" lines do satisfy affix and temper
   assert.equal(compare({ ...doublet, body: '+115 Maximum Life +1500 Maximum Life' }, phase).score, 40);
+});
+
+test('affix rows: game deltas, wrapped lines, build marks and lost properties in the verdict', () => {
+  assert.deepEqual(affixEntries(['368 Armor (+3.2% Toughness)', 'o +2 Strength +[1 - 7] (+2)', 'o +2 Maximum Resource [1 - 5] (+2)',
+    'o 1.3% Resource Cost Reduction [1.0 -', '2.0]% (+1.3%)']), [
+    { text: '+2 Strength', delta: '+2' }, { text: '+2 Maximum Resource', delta: '+2' }, { text: '1.3% Resource Cost Reduction', delta: '+1.3%' }]);
+  const phase = { slots: { ChestArmor: { unique: false, aspects: [], affixes: [{ text: '30 Strength' }, { text: '+115 Maximum Life' }], tempered: [] } } };
+  const garb = { slotType: 'ChestArmor', name: 'DEATH GARB', power: 140, deltas: { toughness: 3.2 }, body: '+2 Strength +2 Maximum Resource',
+    affixLines: [{ text: '+2 Strength', delta: '+2' }, { text: '+2 Maximum Resource', delta: '+2' }],
+    lost: ['+1 Life Regeneration', '+1 Maximum Life'] };
+  const v = verdict(garb, null, phase);
+  assert.deepEqual(v.gains.map(g => [g.text, g.build]), [['+2 Strength', true], ['+2 Maximum Resource', false]]);
+  assert.deepEqual(v.losses.map(g => [g.text, g.build]), [['+1 Life Regeneration', false], ['+1 Maximum Life', true]]);
+  assert.equal(v.kind, 'upgrade'); // +toughness, 2 stats up vs 2 lost: toughness decides
 });
 
 test('upgrade verdict combines game deltas, build fit, values and item power', () => {

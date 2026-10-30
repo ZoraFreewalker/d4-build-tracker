@@ -43,6 +43,10 @@
   .pill.on { background: #213321; border-color: #3f6b3f; color: var(--ok); }
   .pill.off { background: #1c1814; color: var(--no); }
   .pill.off.bad { color: var(--bad); border-color: #6b3a3a; }
+  .pill.gain { background: #1d2a1d; border-color: #35553a; color: #cfe8cf; }
+  .pill.loss { background: #2c1b1b; border-color: #6b3a3a; color: #f0c0c0; }
+  .pill.build { border-color: var(--gold); font-weight: 600; }
+  .vlabel { margin-top: 6px; }
   body.toast { overflow: hidden; }
   .toast-msg { margin: 6px; padding: 12px 16px; border-radius: 8px; background: rgba(14, 12, 10, 0.95); border: 1px solid var(--line);
                border-left: 5px solid var(--gold); color: var(--text); font-size: 15px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
@@ -159,8 +163,19 @@ function verdictBox(r) {
   const box = el('div', 'verdict');
   box.dataset.kind = v.kind;
   box.append(el('b', cls, `${label}: ${r.name || 'dit item'}`));
+  // progress in general (game figures, item power, stats), then what it means for the build
   for (const p of v.pos) box.append(el('div', 'ok', `+ ${p}`));
   for (const n of v.neg) box.append(el('div', 'bad', `− ${n}`));
+  const pillRow = (title, list, cls) => {
+    if (!list?.length) return;
+    box.append(el('div', 'muted vlabel', title));
+    const pills = el('div', 'pills');
+    for (const a of list) pills.append(el('span', `pill ${cls}${a.build ? ' build' : ''}`, `${a.build ? '★ ' : ''}${a.text}${a.delta ? ` (${a.delta})` : ''}`));
+    box.append(pills);
+  };
+  pillRow('Dit item geeft je', v.gains, 'gain');
+  pillRow('Je raakt kwijt', v.losses, 'loss');
+  if (v.gains?.some(a => a.build) || v.losses?.some(a => a.build)) box.append(el('div', 'muted', '★ = gebruikt door je build'));
   box.append(el('div', 'muted', v.against ? `vergeleken met: ${v.against}` : 'Open je character-scherm en hover je equipped items voor een betere vergelijking.'));
   return box;
 }
