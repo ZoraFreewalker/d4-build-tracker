@@ -1,0 +1,517 @@
+// D4 Build Tracker: overlay (tabs Gear/Skills/Paragon), detail view, control window and tray.
+// While Diablo IV runs it captures the screen every PERIOD_MS, OCRs tooltips and compares them with the build.
+// Usage: npm start                 (live)
+//        npm start -- --image <f>  (test with a screenshot instead of the screen)
+// The overlay is click-through except over its interactive parts (header, and the panel on Skills/Paragon).
+import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray } from 'electron';
+import { spawn } from 'node:child_process';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { createLibrary } from './library.mjs';
+import { compare, outside, parseTooltips, progress, sameSlot, screenContext, verdict } from './tracker.mjs';
+
+const DIR = path.dirname(fileURLToPath(import.meta.url));
+// the .ps1 scripts must be real files for powershell, so the installer ships them next to app.asar
+const script = name => (app.isPackaged ? path.join(process.resourcesPath, name) : path.join(DIR, name));
+const ICON = path.join(DIR, 'icon.png');
+const PERIOD_MS = 500;
+const GAME_PROCESS = /^Diablo IV$/i;
+const CROP_WIDTH = 2000; // px of the frame kept around the cursor
+const FRAME = path.join(tmpdir(), 'd4-tracker-frame');
+const BASE = { width: 380, height: 620 }; // overlay size at scale 1
+const SCALE_MIN = 0.5, SCALE_MAX = 2.5;
+const DEFAULT_SETTINGS = { ocr: true, notify: true, opacity: 0.94, overlayOpacity: 1, hotkeys: { overlay: 'Alt+Shift+O', detail: 'Alt+Shift+B', capture: 'Alt+Shift+S' } };
+const imageArg = process.argv.includes('--image') ? path.resolve(process.argv[process.argv.indexOf('--image') + 1]) : null;
+
+if (process.env.D4_USER_DATA) app.setPath('userData', process.env.D4_USER_DATA); // dev: fresh profile
+// second start: the running app shows its window (second-instance); exit before spawning helpers
+if (!app.requestSingleInstanceLock()) process.exit(0);
+
+const lib = createLibrary(app.getPath('userData'));
+let state, build = null;
+let overlay, detail, control, tray;
+
+const settings = () => ({ ...DEFAULT_SETTINGS, ...state.settings, hotkeys: { ...DEFAULT_SETTINGS.hotkeys, ...state.settings?.hotkeys } });
+const buildState = () => (state.builds[state.activeBuild] ??= { phase: null, seen: {} });
+const phases = () => build?.phases ?? [];
+const phase = () => phases().find(p => p.name === buildState().phase) ?? phases()[0] ?? null;
+const save = () => lib.update(() => {}).catch(e => console.error('save failed', e));
+
+async function loadActiveBuild() {
+  build = state.activeBuild ? await lib.get(state.activeBuild) : null;
+  if (build && !phases().some(p => p.name === buildState().phase)) buildState().phase = phases()[0]?.name ?? null;
+  sendBuild();
+  updateVisibility();
+}
+
+// ---------- OCR ----------
+// one long-running OCR process; replies come back in request order
+const ocrProc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script('ocr.ps1'), '-Server'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
+const waiting = [];
+readline.createInterface({ input: ocrProc.stdout }).on('line', line => waiting.shift()?.(line));
+function ocr(file) {
+  return new Promise((resolve, reject) => {
+    waiting.push(line => {
+      const out = JSON.parse(line.replace(/[\u0000-\u001f]/g, ' ')); // D4 bullet glyphs
+      out.error ? reject(new Error(out.error)) : resolve(out);
+    });
+    ocrProc.stdin.write(`${file}\n`);
+  });
+}
+
+// Captures the primary display. crop 'cursor' keeps a band around the cursor (tooltips sit next to it),
+// 'right' the right side (the ABILITIES panel), 'none' everything. Returns the file and the band's x offset.
+async function grabScreen({ crop = 'cursor' } = {}) {
+  const d = screen.getPrimaryDisplay();
+  const thumbnailSize = { width: Math.round(d.size.width * d.scaleFactor), height: Math.round(d.size.height * d.scaleFactor) };
+  const [src] = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
+  let img = src.thumbnail, offsetX = 0;
+  const { width, height } = img.getSize();
+  if (crop === 'cursor' && width > CROP_WIDTH) {
+    const cx = (screen.getCursorScreenPoint().x - d.bounds.x) * d.scaleFactor;
+    // tooltips open mostly to the left of the hovered item (inventory/character panel are on the right)
+    offsetX = Math.round(Math.min(Math.max(0, cx - CROP_WIDTH * 0.65), width - CROP_WIDTH));
+    img = img.crop({ x: offsetX, y: 0, width: CROP_WIDTH, height });
+  } else if (crop === 'right') {
+    offsetX = Math.round(width * 0.6);
+    img = img.crop({ x: offsetX, y: 0, width: width - offsetX, height });
+  }
+  return { file: await writeFrame(maxChannel(img)), offsetX };
+}
+
+// every pixel becomes its brightest channel: colored text (red "-21.5%", blue values) turns white for the OCR
+function maxChannel(img) {
+  const { width, height } = img.getSize();
+  const px = img.toBitmap(); // BGRA
+  for (let i = 0; i < px.length; i += 4) px[i] = px[i + 1] = px[i + 2] = Math.max(px[i], px[i + 1], px[i + 2]);
+  return nativeImage.createFromBitmap(px, { width, height });
+}
+
+// new file per frame: the WinRT reader keeps the previous one locked for a while
+async function writeFrame(img) {
+  const file = `${FRAME}-${Date.now()}.jpg`;
+  await writeFile(file, img.toJPEG(85));
+  return file;
+}
+
+// our own windows in frame pixels; the overlay is not hidden from captures (transparent windows ignore
+// content protection), so its text must be dropped from the OCR result
+function ownRects() {
+  const d = screen.getPrimaryDisplay();
+  return [overlay, detail, toast].filter(w => w && !w.isDestroyed() && w.isVisible()).map(w => {
+    const b = w.getBounds();
+    return { x: (b.x - d.bounds.x) * d.scaleFactor, y: (b.y - d.bounds.y) * d.scaleFactor, width: b.width * d.scaleFactor, height: b.height * d.scaleFactor };
+  });
+}
+const cursorOnOwnWindow = () => {
+  const p = screen.getCursorScreenPoint();
+  return [overlay, detail].some(w => w && !w.isDestroyed() && w.isVisible() && (b => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height)(w.getBounds()));
+};
+
+// ---------- foreground: the overlay only lives on top of Diablo IV ----------
+// gameRunning = D4 is the foreground window (or one of our own windows, e.g. ⚙ opened from the overlay)
+let gameRunning = false, userHidden = false;
+const focusProc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script('focus.ps1'), '-ParentPid', String(process.pid)], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+readline.createInterface({ input: focusProc.stdout }).on('line', line => {
+  const [pid, name] = line.split('|');
+  if (Number(pid) === process.pid) return; // our own window in front: keep the current state
+  gameRunning = GAME_PROCESS.test(name ?? '');
+  if (process.env.D4_DEBUG) console.log('foreground', name, '-> overlay', gameRunning ? 'on' : 'off');
+  updateVisibility();
+});
+
+function updateVisibility() {
+  const show = !!imageArg || (gameRunning && !userHidden && !!build);
+  for (const w of [overlay, detail]) {
+    if (!w || w.isDestroyed()) continue;
+    if (show && !w.isVisible()) w.showInactive();
+    else if (!show && w.isVisible()) w.hide();
+  }
+}
+const toggleOverlay = () => { userHidden = !userHidden; updateVisibility(); };
+
+async function keepFrame(kind, frame, lines) {
+  const base = path.join(app.getPath('userData'), 'debug', `${kind}-${Date.now()}`);
+  await mkdir(path.dirname(base), { recursive: true });
+  await copyFile(frame, `${base}.jpg`);
+  await writeFile(`${base}.json`, JSON.stringify(lines, null, 1));
+}
+// a tooltip was on screen but not parsed: keep the frame + OCR (max one per 10 s) so it can be fixed
+let lastKept = 0;
+async function keepUnrecognized(frame, lines) {
+  if (Date.now() - lastKept < 10_000) return;
+  lastKept = Date.now();
+  await keepFrame('unrecognized', frame, lines);
+}
+
+// hotkey: save the whole screen + its OCR (e.g. skill tree, paragon) so new screens can be supported
+async function captureScreen() {
+  if (!gameRunning && !imageArg) return;
+  const { file } = await grabScreen({ crop: 'none' });
+  const lines = await ocr(file);
+  const base = path.join(app.getPath('userData'), 'debug', `screen-${Date.now()}`);
+  await mkdir(path.dirname(base), { recursive: true });
+  await copyFile(file, `${base}.jpg`);
+  await writeFile(`${base}.json`, JSON.stringify(lines, null, 1));
+  rm(file, { force: true }).catch(() => {});
+  send({ notice: 'Scherm opgeslagen voor analyse' });
+}
+
+// ---------- in-game screen: skill tree / paragon open? ----------
+// context switches the overlay to the matching tab while that screen is open
+let context = null, paragonKept = false, contextMisses = 0;
+async function detectContext() {
+  const { file, offsetX } = await grabScreen({ crop: 'right' });
+  let lines;
+  try { lines = await ocr(file); } finally { setTimeout(() => rm(file, { force: true }).catch(() => {}), 2000); }
+  const next = screenContext(lines);
+  // the paragon screen is only inferred (no sample yet): keep the first one so detection can be verified
+  if (next === 'paragon' && !paragonKept) {
+    paragonKept = true;
+    for (const l of lines) l.x += offsetX;
+    await keepFrame('paragon', file, lines).catch(() => {});
+  }
+  // a single missed read (a node tooltip covering the header) must not close the skills view: leave only
+  // after 3 misses in a row (~4.5 s)
+  contextMisses = next ? 0 : contextMisses + 1;
+  if (!next && context && contextMisses < 3) return;
+  if (next !== context) { context = next; send(); }
+}
+
+// ---------- overlay data ----------
+let lastSent = '';
+function send(extra = {}) {
+  const ph = phase();
+  const data = JSON.stringify({
+    build: build?.name ?? null, phase: ph?.name ?? null, phases: phases().map(p => p.name),
+    gameRunning: gameRunning || !!imageArg, ocr: settings().ocr, hotkeys: settings().hotkeys, opacity: settings().opacity,
+    progress: ph ? progress(ph, buildState().seen[ph.name]) : null, context, results: [], ...extra,
+  });
+  if (data === lastSent) return;
+  lastSent = data;
+  for (const w of [overlay, detail]) if (w && !w.isDestroyed()) w.webContents.send('update', JSON.parse(data));
+}
+// the full phase (skills, paragon) only goes out when build or phase changes
+function sendBuild() {
+  // leveling order: the phase whose skill tree has the most milestones (e.g. "Leveling Skill Tree")
+  const lv = phases().reduce((best, p) => ((p.skills?.steps.length ?? 0) > (best?.skills?.steps.length ?? 1) ? p : best), null);
+  const payload = { name: build?.name ?? null, phase: phase(), leveling: lv ? { from: lv.name, steps: lv.skills.steps } : null };
+  overlay?.webContents.send('build', payload);
+  detail?.webContents.send('build', payload);
+  lastSent = '';
+  send();
+}
+
+async function tick() {
+  const ph = phase();
+  if (!ph) return send();
+  // the player is scrolling/dragging the overlay: no tooltip to read, and capturing would make it stutter
+  if (!imageArg && (dragTimer || cursorOnOwnWindow())) return;
+  // test images go through the same color step as live frames
+  const testImg = imageArg && nativeImage.createFromPath(imageArg); // empty for formats Electron can't read (webp)
+  const { file: frame, offsetX } = !imageArg ? await grabScreen() : { file: testImg.isEmpty() ? imageArg : await writeFrame(maxChannel(testImg)), offsetX: 0 };
+  let lines;
+  try { lines = await ocr(frame); } finally { if (frame !== imageArg) setTimeout(() => rm(frame, { force: true }).catch(() => {}), 2000); }
+  for (const l of lines) l.x += offsetX;
+  if (!imageArg) lines = outside(lines, ownRects());
+  else context = screenContext(lines); // test images: detect the screen from the same frame
+  const tooltips = parseTooltips(lines);
+  if (!imageArg && !tooltips.length && lines.some(l => /item power/i.test(l.text))) await keepUnrecognized(frame, lines);
+  if (process.env.D4_DEBUG) console.log('tooltips', JSON.stringify(tooltips.map(t => ({ name: t.name, equipped: t.equipped, power: t.power, deltas: t.deltas }))));
+  for (const t of tooltips.filter(t => t.equipped && t.name)) rememberEquipped(t);
+  const results = tooltips.map(t => {
+    const match = compare(t, ph);
+    // the item to compare with: the equipped tooltip on screen, else the weakest remembered one of that kind
+    const equipped = t.equipped ? null : tooltips.find(e => e.equipped && sameSlot(e.slotType, t.slotType)) ?? weakestEquipped(t, ph);
+    return {
+      name: t.name, type: `${t.ancestral ? 'Ancestral ' : ''}${t.rarity} ${t.type}`, power: t.power, equipped: t.equipped, match,
+      // progress is kept per build slot type: an equipped axe can fill the build's "Sword" (dual-wield) slots
+      slotType: match?.slot.split(', ')[0].replace(/ \d+$/, '') ?? t.slotType,
+      verdict: t.equipped || t.slotType === 'Aspect' ? null : { ...verdict(t, equipped, ph), against: equipped?.name ?? null },
+    };
+  });
+  const before = progress(ph, buildState().seen[ph.name]).percent;
+  for (const r of results.filter(r => r.equipped && r.match && r.name)) {
+    const seen = ((buildState().seen[ph.name] ??= {})[r.slotType] ??= {});
+    if (seen[r.name] !== r.match.score) { seen[r.name] = r.match.score; save(); }
+  }
+  const after = progress(ph, buildState().seen[ph.name]).percent;
+  if (after > before) notify(`Build-voortgang ${before}% → ${after}%`, 'ok');
+  for (const r of results.filter(r => r.verdict?.kind === 'upgrade')) notifyOnce(r.name, `▲ Upgrade: ${r.name || 'item'}${r.verdict.pos[0] ? ` (${r.verdict.pos[0]})` : ''}`);
+
+  // OCR misses a frame now and then (mouse moving, tooltip fading in): keep the last result for ~1 s
+  if (!results.length && lastResults.length && ++emptyTicks < 3) return send({ results: lastResults });
+  emptyTicks = 0;
+  lastResults = results;
+  send({ results });
+}
+let lastResults = [], emptyTicks = 0;
+
+// ---------- notifications: a small toast, also when the overlay is hidden ----------
+let toast, toastTimer, toastReady;
+const notified = new Map(); // item name -> time, so one drop is announced once
+function notifyOnce(key, text) {
+  if (Date.now() - (notified.get(key) ?? 0) < 60_000) return;
+  notified.set(key, Date.now());
+  notify(text, 'ok');
+}
+function notify(text, kind) {
+  if (process.env.D4_DEBUG) console.log('notify', text);
+  if (settings().notify === false || (!gameRunning && !imageArg)) return;
+  if (!toast || toast.isDestroyed()) {
+    const { workArea } = screen.getPrimaryDisplay();
+    toast = new BrowserWindow({
+      x: workArea.x + Math.round(workArea.width / 2 - 260), y: workArea.y + 40, width: 520, height: 64, show: false,
+      transparent: true, frame: false, alwaysOnTop: true, focusable: false, skipTaskbar: true, resizable: false, hasShadow: false,
+      webPreferences: { preload: path.join(DIR, 'preload.cjs'), backgroundThrottling: false },
+    });
+    toast.setAlwaysOnTop(true, 'screen-saver');
+    toast.setIgnoreMouseEvents(true);
+    toastReady = toast.loadFile(path.join(DIR, 'overlay.html'), { hash: 'toast' });
+  }
+  // the first message waits for the page; isLoading() is still false right after loadFile()
+  toastReady.then(() => { if (toast.isDestroyed()) return; toast.webContents.send('toast', { text, kind }); toast.showInactive(); });
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast?.isDestroyed() || toast.hide(), 4500);
+}
+
+// equipped items seen in tooltips, so a new drop can be judged without the comparison tooltip on screen.
+// Per item type the latest one is kept (two for rings and one-handed weapons, which are worn in pairs).
+function rememberEquipped(t) {
+  const store = (buildState().equipped ??= {});
+  const list = (store[t.slotType] ?? []).filter(e => e.name !== t.name);
+  const keep = t.slotType === 'Ring' || sameSlot(t.slotType, 'Sword') ? 2 : 1;
+  const item = { name: t.name, slotType: t.slotType, rarity: t.rarity, power: t.power, body: t.body, seenAt: Date.now() };
+  const prev = store[t.slotType]?.find(e => e.name === t.name);
+  store[t.slotType] = [item, ...list].slice(0, keep);
+  if (!prev || prev.body !== t.body || prev.power !== t.power) save();
+}
+function weakestEquipped(t, ph) {
+  const all = Object.values(buildState().equipped ?? {}).flat().filter(e => sameSlot(e.slotType, t.slotType));
+  return all.sort((a, b) => (compare(a, ph)?.score ?? 0) - (compare(b, ph)?.score ?? 0))[0] ?? null;
+}
+
+// ---------- overlay window: scale, drag, click-through ----------
+// x/y passed in during a drag: re-reading getPosition each step drifts under Windows display scaling
+function applyScale(scale, [x, y] = overlay.getPosition()) {
+  state.window.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale));
+  overlay.setBounds({ x, y, width: Math.round(BASE.width * state.window.scale), height: Math.round(BASE.height * state.window.scale) });
+  overlay.webContents.setZoomFactor(state.window.scale);
+}
+
+// move/scale by polling the cursor: the window follows it, so the mouseup still lands on the overlay
+let dragTimer = null;
+function startDrag(mode) {
+  if (state.window.locked) return;
+  clearInterval(dragTimer);
+  const start = screen.getCursorScreenPoint();
+  const [x, y] = overlay.getPosition();
+  const scale = state.window.scale;
+  dragTimer = setInterval(() => {
+    const p = screen.getCursorScreenPoint();
+    // setBounds with a fixed size: setPosition alone makes the window grow under Windows display scaling
+    if (mode === 'move') return overlay.setBounds({ x: x + p.x - start.x, y: y + p.y - start.y, width: Math.round(BASE.width * scale), height: Math.round(BASE.height * scale) });
+    const b = overlay.getBounds();
+    if (p.y < b.y - 40 || p.y > b.y + b.height + 40) return endDrag(); // cursor left the overlay, mouseup would be lost
+    applyScale(scale + (p.x - start.x) / BASE.width, [x, y]);
+  }, 16);
+}
+function endDrag() {
+  if (!dragTimer) return;
+  clearInterval(dragTimer);
+  dragTimer = null;
+  [state.window.x, state.window.y] = overlay.getPosition();
+  save();
+}
+
+// click-through except over the rects the renderer reports; we poll the cursor instead of { forward: true },
+// whose system-wide mouse hook stalls the mouse while this process is busy capturing the screen
+function watchInteractive(win, scaleOf, rectsRef) {
+  let interactive = false;
+  win.setIgnoreMouseEvents(true);
+  setInterval(() => {
+    if (win.isDestroyed() || !win.isVisible()) return;
+    const p = screen.getCursorScreenPoint(), b = win.getBounds(), s = scaleOf();
+    const inside = (win === overlay && !!dragTimer) || rectsRef().some(r => p.x >= b.x + r.x * s && p.x <= b.x + (r.x + r.width) * s
+      && p.y >= b.y + r.y * s && p.y <= b.y + (r.y + r.height) * s);
+    if (inside !== interactive) win.setIgnoreMouseEvents(!(interactive = inside));
+  }, 50);
+}
+
+function createOverlay() {
+  const { workArea } = screen.getPrimaryDisplay();
+  // default left side: D4 opens character/inventory panels on the right and the minimap is top-right
+  state.window = { x: workArea.x + 20, y: workArea.y + Math.round(workArea.height * 0.15), scale: 1, locked: false, ...state.window };
+  overlay = new BrowserWindow({
+    x: state.window.x, y: state.window.y, width: BASE.width, height: BASE.height, show: false,
+    transparent: true, frame: false, alwaysOnTop: true, focusable: false, skipTaskbar: true, resizable: false, hasShadow: false,
+    webPreferences: { preload: path.join(DIR, 'preload.cjs'), backgroundThrottling: false }, // hidden while alt-tabbed: stay ready
+  });
+  overlay.setAlwaysOnTop(true, 'screen-saver');
+  if (!imageArg) overlay.setContentProtection(true); // best effort only, see ownRects()
+  let rects = [];
+  ipcMain.on('rects', (e, r) => { if (e.sender === overlay.webContents) rects = Array.isArray(r) ? r : []; });
+  watchInteractive(overlay, () => state.window.scale, () => rects);
+  overlay.webContents.on('did-finish-load', () => { applyScale(state.window.scale); overlay.setOpacity(settings().overlayOpacity); sendBuild(); });
+  overlay.loadFile(path.join(DIR, 'overlay.html'), process.env.D4_TAB ? { query: { tab: process.env.D4_TAB } } : {});
+}
+
+// big centered view for the paragon boards; interactive everywhere, closed with its hotkey or button
+function toggleDetail() {
+  if (detail && !detail.isDestroyed()) return detail.close();
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = Math.round(workArea.width * 0.7), height = Math.round(workArea.height * 0.85);
+  detail = new BrowserWindow({
+    x: workArea.x + Math.round((workArea.width - width) / 2), y: workArea.y + Math.round((workArea.height - height) / 2), width, height,
+    show: false, transparent: true, frame: false, alwaysOnTop: true, focusable: false, skipTaskbar: true, resizable: false, hasShadow: false,
+    webPreferences: { preload: path.join(DIR, 'preload.cjs'), backgroundThrottling: false },
+  });
+  detail.setAlwaysOnTop(true, 'screen-saver');
+  if (!imageArg) detail.setContentProtection(true);
+  detail.webContents.on('did-finish-load', () => { sendBuild(); updateVisibility(); });
+  detail.loadFile(path.join(DIR, 'overlay.html'), { hash: 'detail' });
+}
+
+function showControl() {
+  if (control && !control.isDestroyed()) return control.show(), control.focus();
+  control = new BrowserWindow({
+    width: 620, height: 720, title: 'D4 Build Tracker', icon: ICON, autoHideMenuBar: true, backgroundColor: '#14110e',
+    webPreferences: { preload: path.join(DIR, 'preload.cjs') },
+  });
+  control.once('close', () => { if (process.env.D4_DEBUG) console.log('main window closed -> quit'); app.quit(); }); // closing the main window ends the app, overlay included
+  if (process.env.D4_CONTROL_JS) control.webContents.once('did-finish-load', () => control.webContents.executeJavaScript(process.env.D4_CONTROL_JS)); // dev: drive the form
+  control.loadFile(path.join(DIR, 'control.html'));
+}
+
+// ---------- hotkeys, tray ----------
+function registerHotkeys() {
+  globalShortcut.unregisterAll();
+  const { hotkeys } = settings();
+  const failed = [];
+  const reg = (accel, fn) => { try { if (!globalShortcut.register(accel, fn)) failed.push(accel); } catch { failed.push(accel); } };
+  reg(hotkeys.overlay, toggleOverlay);
+  reg(hotkeys.detail, toggleDetail);
+  reg(hotkeys.capture, () => captureScreen().catch(e => console.error('capture failed', e)));
+  return failed;
+}
+
+function createTray() {
+  tray = new Tray(nativeImage.createFromPath(ICON).resize({ width: 16, height: 16 }));
+  tray.setToolTip('D4 Build Tracker');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Overlay tonen/verbergen (in Diablo IV)', click: toggleOverlay },
+    { label: 'Paragon/skills groot', click: toggleDetail },
+    { label: 'Builds & instellingen', click: showControl },
+    { type: 'separator' },
+    { label: 'Afsluiten', click: () => app.quit() },
+  ]));
+  tray.on('click', showControl);
+}
+
+// ---------- IPC ----------
+function registerIpc() {
+  ipcMain.on('drag-start', (_e, mode) => startDrag(mode === 'scale' ? 'scale' : 'move'));
+  ipcMain.on('drag-end', endDrag);
+  ipcMain.on('phase', (_e, name) => {
+    if (!phases().some(p => p.name === name)) return;
+    buildState().phase = String(name);
+    save();
+    sendBuild();
+  });
+  ipcMain.on('open-control', showControl);
+  ipcMain.handle('reset-progress', async () => {
+    buildState().seen = {};
+    buildState().equipped = {};
+    await save();
+    lastSent = '';
+    send();
+  });
+  ipcMain.handle('open-debug', () => shell.openPath(path.join(app.getPath('userData'), 'debug')));
+  ipcMain.on('toggle-detail', toggleDetail);
+
+  ipcMain.handle('library', async () => ({ builds: await lib.list(), active: state.activeBuild, phase: phase()?.name ?? null, phases: phases().map(p => p.name), settings: settings(), window: state.window }));
+  ipcMain.handle('import', async (_e, link) => {
+    const imported = await lib.import(String(link ?? '').slice(0, 2000));
+    state = await lib.state();
+    await loadActiveBuild();
+    return { name: imported.name, phases: imported.phases.length };
+  });
+  ipcMain.handle('activate', async (_e, id) => {
+    if (!(await lib.list()).some(b => b.id === id)) return;
+    state.activeBuild = id;
+    await save();
+    await loadActiveBuild();
+  });
+  ipcMain.handle('remove', async (_e, id) => {
+    await lib.remove(String(id));
+    state = await lib.state();
+    await loadActiveBuild();
+  });
+  ipcMain.handle('settings', async (_e, change) => {
+    const next = { ...settings(), ...change, hotkeys: { ...settings().hotkeys, ...change?.hotkeys } };
+    const clamp = (v, lo, fallback) => Math.min(1, Math.max(lo, Number.isFinite(Number(v)) ? Number(v) : fallback));
+    next.opacity = clamp(next.opacity, 0, DEFAULT_SETTINGS.opacity); // panel background only
+    next.overlayOpacity = clamp(next.overlayOpacity, 0.3, 1); // the whole overlay, text included
+    next.ocr = !!next.ocr;
+    next.notify = !!next.notify;
+    overlay.setOpacity(next.overlayOpacity);
+    delete next.locked; delete next.resetWindow; // window state, not settings
+    state.settings = next;
+    if (typeof change?.locked === 'boolean') state.window.locked = change.locked;
+    if (change?.resetWindow) { delete state.window; createOverlayPosition(); }
+    const failed = registerHotkeys();
+    await save();
+    lastSent = '';
+    send();
+    return { failed };
+  });
+}
+
+function createOverlayPosition() {
+  const { workArea } = screen.getPrimaryDisplay();
+  state.window = { x: workArea.x + 20, y: workArea.y + Math.round(workArea.height * 0.15), scale: 1, locked: false };
+  overlay.setBounds({ x: state.window.x, y: state.window.y, width: BASE.width, height: BASE.height });
+  applyScale(1);
+}
+
+app.whenReady().then(async () => {
+  state = await lib.state();
+  if (!app.isPackaged && !process.env.D4_USER_DATA) await lib.migrate(DIR); // dev: take over the old build.json/progress.json once
+  state = await lib.state();
+  build = state.activeBuild ? await lib.get(state.activeBuild) : null;
+
+  registerIpc();
+  createOverlay();
+  createTray();
+  registerHotkeys();
+  if (!imageArg) showControl(); // the main window is "the app": closing it quits
+  updateVisibility();
+
+  // dev check without photographing the desktop: write PNGs of our own windows only
+  if (process.env.D4_DETAIL) toggleDetail();
+  if (process.env.D4_SNAPSHOT_DIR) setInterval(async () => {
+    for (const [name, w] of [['overlay', overlay], ['detail', detail], ['control', control], ['toast', toast]]) {
+      if (w && !w.isDestroyed() && w.isVisible()) await writeFile(path.join(process.env.D4_SNAPSHOT_DIR, `${name}.png`), (await w.webContents.capturePage()).toPNG());
+    }
+  }, 1500);
+
+  for (let n = 0; ; n++) {
+    try {
+      const active = (gameRunning || !!imageArg) && settings().ocr;
+      if (active && !imageArg && n % 3 === 0) await detectContext(); // ~every 1.5 s
+      else if (!active && context) { context = null; }
+      if (active) await tick(); else send();
+    } catch (e) {
+      console.error('tick failed:', e.message);
+    }
+    await new Promise(r => setTimeout(r, PERIOD_MS));
+  }
+});
+
+app.on('second-instance', showControl);
+app.on('window-all-closed', () => {}); // the overlay windows are never "all closed"; quitting goes via the main window or tray
+app.on('will-quit', () => {
+  if (process.env.D4_DEBUG) console.log('will-quit'); globalShortcut.unregisterAll(); ocrProc.kill(); focusProc.kill(); });

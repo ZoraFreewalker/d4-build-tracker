@@ -1,0 +1,9 @@
+node_modules/
+dist/
+debug/
+# personal / generated
+build.json
+progress.json
+overzicht.txt
+*.log
+samples/

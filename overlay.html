@@ -1,0 +1,401 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<style>
+  :root { --bg: rgba(14, 12, 10, 0.94); --line: #6b5636; --gold: #f0c674; --text: #e8e2d4; --muted: #9a907c;
+          --ok: #8fd18f; --warn: #e0a050; --bad: #e07070; --no: #7d7466; }
+  html, body { margin: 0; background: transparent; font: 13px/1.35 'Segoe UI', sans-serif; color: var(--text); user-select: none; overflow: hidden; }
+  .panel { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .top h1 { flex: 1; font-size: 14px; margin: 0; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .icon { background: none; border: 0; color: var(--muted); font: 15px 'Segoe UI Symbol', sans-serif; padding: 0 3px; cursor: pointer; }
+  .icon:hover { color: var(--gold); }
+  .grip[data-drag="move"] { cursor: move; } .grip[data-drag="scale"] { cursor: nwse-resize; }
+  .dd { display: block; width: 100%; margin: 6px 0 4px; text-align: left; font: inherit; color: var(--text); background: #2b261f; border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; cursor: pointer; }
+  .menu { border: 1px solid var(--line); border-radius: 4px; background: #1c1814; margin-bottom: 4px; }
+  .opt { padding: 3px 8px; cursor: pointer; } .opt:hover { background: #3a3126; } .opt.cur { color: var(--gold); }
+  .tabs { display: flex; gap: 4px; margin-top: 4px; }
+  .tab, .chip { font: inherit; font-size: 12px; color: var(--muted); background: #211d18; border: 1px solid #3d3326; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+  .tab.cur, .chip.cur { color: var(--gold); border-color: var(--line); background: #2e271e; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+  .bar { height: 6px; background: #2b261f; border-radius: 3px; margin: 6px 0; overflow: hidden; }
+  .bar > div { height: 100%; background: #d9a441; }
+  .ok { color: var(--ok); } .no { color: var(--no); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  b.ok { color: var(--ok); } b.warn { color: var(--warn); } b.bad { color: var(--bad); }
+  .item { margin-top: 8px; } .item > .row > b:first-child { color: var(--gold); }
+  ul { margin: 4px 0 0; padding-left: 4px; list-style: none; }
+  li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 10px 0 2px; }
+  #body { max-height: calc(100vh - 150px); overflow-y: auto; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #3d3326; border-radius: 3px; }
+  .new { color: var(--gold); }
+  .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 8px 0 4px; }
+  .tile { background: #211d18; border: 1px solid #3d3326; border-radius: 4px; padding: 3px 5px; font-size: 11px; color: var(--text); }
+  .tile .mini { height: 4px; background: #2b261f; border-radius: 2px; margin-top: 3px; overflow: hidden; }
+  .tile .mini > div { height: 100%; }
+  .tile.ok .mini > div { background: var(--ok); } .tile.warn .mini > div { background: var(--warn); } .tile.bad .mini > div { background: var(--bad); }
+  .tile.ok { border-color: #3f5a3f; }
+  .pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .pill { font-size: 12px; padding: 2px 7px; border-radius: 10px; border: 1px solid #3d3326; }
+  .pill.on { background: #213321; border-color: #3f6b3f; color: var(--ok); }
+  .pill.off { background: #1c1814; color: var(--no); }
+  .pill.off.bad { color: var(--bad); border-color: #6b3a3a; }
+  body.toast { overflow: hidden; }
+  .toast-msg { margin: 6px; padding: 12px 16px; border-radius: 8px; background: rgba(14, 12, 10, 0.95); border: 1px solid var(--line);
+               border-left: 5px solid var(--gold); color: var(--text); font-size: 15px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+  .toast-msg.ok { border-left-color: var(--ok); }
+  .verdict { border: 1px solid #3d3326; border-left-width: 4px; border-radius: 4px; padding: 6px 8px; margin: 6px 0; background: #1c1814; }
+  .verdict[data-kind="upgrade"] { border-left-color: var(--ok); } .verdict[data-kind="downgrade"] { border-left-color: var(--bad); }
+  .verdict[data-kind="sidegrade"] { border-left-color: var(--warn); }
+  .verdict b { font-size: 14px; }
+  ol.order { margin: 4px 0; padding-left: 20px; } ol.order > li { margin-bottom: 6px; } ol.order > li > b { color: var(--gold); }
+  ol.order ul { margin: 0; padding-left: 4px; color: var(--text); }
+  .rank { color: var(--muted); float: right; margin-left: 6px; }
+  svg.board { display: block; width: 100%; height: auto; margin: 6px 0; }
+  .legend span { margin-right: 8px; font-size: 11px; }
+  .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
+  /* detail view */
+  body.detail .panel { height: calc(100vh - 2px); box-sizing: border-box; margin: 0; display: flex; flex-direction: column; }
+  body.detail #detail-svg { flex: 1; min-height: 0; }
+  body.detail #detail-svg svg { width: 100%; height: 100%; }
+  .cols { display: flex; gap: 16px; flex: 1; min-height: 0; }
+  .cols > aside { width: 260px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { rotatedCell } from './board.mjs';
+
+const t = window.tracker;
+const isDetail = location.hash === '#detail';
+const isToast = location.hash === '#toast';
+if (isDetail) document.body.classList.add('detail');
+
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const scoreCls = s => (s >= 90 ? 'ok' : s >= 50 ? 'warn' : 'bad');
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+let live = null, phase = null, buildName = null, leveling = null, menuOpen = false;
+let lastContext = null, manualFor = null; // in-game screen; manualFor = the screen during which a tab was clicked
+let tab = new URLSearchParams(location.search).get('tab') ?? load('tab', 'gear'); // ?tab= is a dev hook for snapshots
+let paragonStep = null, boardIdx = 0;
+
+// ---------- paragon drawing (data comes from the build file, so only textContent/attributes, never HTML) ----------
+const COLORS = { n: '#6a604f', m: '#3f86c9', r: '#d9b13a', l: '#e8732c', g: '#9a9a9a', s: '#b06ae0' };
+const NAMES = { n: 'normaal', m: 'magic', r: 'rare', l: 'legendary', g: 'gate', s: 'glyph socket' };
+const NS = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+
+function drawBoard(g, board, ox = 0, oy = 0) {
+  const sel = new Set(board.selected);
+  for (let i = 0; i < board.cells.length; i++) {
+    const c = board.cells[i];
+    if (c === '.') continue;
+    const [x, y] = rotatedCell(i, board.width, board.rotation);
+    const on = sel.has(i);
+    const shape = c === 's' || c === 'l'
+      ? svgEl('circle', { cx: ox + x + 0.5, cy: oy + y + 0.5, r: 0.45 })
+      : svgEl('rect', { x: ox + x + 0.1, y: oy + y + 0.1, width: 0.8, height: 0.8, rx: 0.12 });
+    shape.setAttribute('fill', COLORS[c]);
+    shape.setAttribute('opacity', on ? 1 : 0.18);
+    if (on) { shape.setAttribute('stroke', '#fff2c8'); shape.setAttribute('stroke-width', 0.08); }
+    const title = svgEl('title', {});
+    title.textContent = `${board.labels[i] ?? NAMES[c]}${on ? ' ✓' : ''}`;
+    shape.append(title);
+    g.append(shape);
+  }
+}
+
+function boardSvg(board) {
+  const svg = svgEl('svg', { class: 'board', viewBox: `0 0 ${board.width} ${board.width}` });
+  svg.append(svgEl('rect', { x: 0, y: 0, width: board.width, height: board.width, fill: '#1a1612', rx: 0.4 }));
+  drawBoard(svg, board);
+  return svg;
+}
+
+// all boards of a step, placed by their grid position (one board = width cells)
+function stepSvg(boards) {
+  const w = boards[0]?.width ?? 21;
+  const xs = boards.map(b => b.position.x), ys = boards.map(b => b.position.y);
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const cols = Math.max(...xs) - minX + 1, rows = Math.max(...ys) - minY + 1;
+  const svg = svgEl('svg', { viewBox: `-1 -1 ${cols * w + 2} ${rows * w + 2}`, preserveAspectRatio: 'xMidYMid meet' });
+  boards.forEach((b, i) => {
+    const ox = (b.position.x - minX) * w, oy = (b.position.y - minY) * w;
+    svg.append(svgEl('rect', { x: ox, y: oy, width: w, height: w, fill: '#1a1612', stroke: '#3d3326', 'stroke-width': 0.15, rx: 0.4 }));
+    drawBoard(svg, b, ox, oy);
+    const label = svgEl('text', { x: ox + 0.6, y: oy + 1.4, fill: '#f0c674', 'font-size': 1.1 });
+    label.textContent = `${i + 1}. ${b.name}${b.glyph ? ` · ${b.glyph.name} ${b.glyph.level}` : ''}`;
+    svg.append(label);
+  });
+  return svg;
+}
+
+const legend = () => {
+  const d = el('div', 'legend muted');
+  for (const c of 'nmrlsg') { const s = el('span'); const sw = el('span', 'sw'); sw.style.background = COLORS[c]; s.append(sw, NAMES[c]); d.append(s); }
+  return d;
+};
+
+const stepChips = (steps, cur, onPick) => {
+  const chips = el('div', 'chips');
+  steps.forEach((s, i) => { const b = el('button', `chip${i === cur ? ' cur' : ''}`, s.name); b.onclick = () => onPick(i); chips.append(b); });
+  return chips;
+};
+
+// ---------- upgrade verdict for the hovered item ----------
+const VERDICT = {
+  upgrade: ['ok', '▲ Upgrade'], downgrade: ['bad', '▼ Geen upgrade'], sidegrade: ['warn', '≈ Sidegrade'],
+  equal: ['muted', '= Geen verschil gevonden'], unknown: ['muted', '? Nog niet te beoordelen'],
+};
+function verdictBox(r) {
+  const v = r.verdict;
+  const [cls, label] = VERDICT[v.kind] ?? VERDICT.unknown;
+  const box = el('div', 'verdict');
+  box.dataset.kind = v.kind;
+  box.append(el('b', cls, `${label}: ${r.name || 'dit item'}`));
+  for (const p of v.pos) box.append(el('div', 'ok', `+ ${p}`));
+  for (const n of v.neg) box.append(el('div', 'bad', `− ${n}`));
+  box.append(el('div', 'muted', v.against ? `vergeleken met: ${v.against}` : 'Open je character-scherm en hover je equipped items voor een betere vergelijking.'));
+  return box;
+}
+
+// compact overview: one tile per slot with its score as a colored bar
+const SHORT = { ChestArmor: 'Chest', Legs: 'Legs', Mace2H: '2H Mace', Axe2H: '2H Axe', Sword2H: '2H Sword', HoradricSeal: 'Seal' };
+function slotGrid(slots) {
+  const grid = el('div', 'slots');
+  for (const s of slots) {
+    const tile = el('div', `tile ${scoreCls(s.score)}`);
+    tile.title = s.item ? `${s.slot}: ${s.item} (${s.score}%)` : `${s.slot}: nog niet gezien`;
+    const base = s.slot.replace(/ \d+$/, '');
+    tile.append(el('span', null, `${SHORT[base] ?? base}${/ \d+$/.test(s.slot) ? ` ${s.slot.split(' ').pop()}` : ''}`));
+    const bar = el('div', 'mini'); const fill = el('div'); fill.style.width = `${s.score}%`; bar.append(fill);
+    tile.append(bar);
+    grid.append(tile);
+  }
+  return grid;
+}
+
+// ---------- tabs ----------
+function gearTab(body) {
+  const p = live?.progress;
+  if (live?.notice) body.append(el('div', 'ok', live.notice));
+  if (p) {
+    const r = el('div', 'row'); r.append(el('span', null, 'Build voltooid'), el('b', scoreCls(p.percent), `${p.percent}%`));
+    const bar = el('div', 'bar'); const fill = el('div'); fill.style.width = `${p.percent}%`; bar.append(fill);
+    body.append(r, bar);
+    if (p.next && p.next.score < 100) body.append(el('div', 'muted', `Volgende: ${p.next.slot}${p.next.item ? ` (nu ${p.next.score}%)` : ' (nog niet gezien)'}`));
+    body.append(slotGrid(p.slots));
+  }
+  if (!live?.ocr) body.append(el('div', 'muted', 'Item-herkenning staat uit (instellingen).'));
+  else if (!live?.gameRunning) body.append(el('div', 'muted', 'Diablo IV niet gevonden. Zet het spel op borderless.'));
+  else if (!live.results.length) body.append(el('div', 'muted', 'Hover over een item. Open je character-scherm om equipped items te tellen.'));
+  else {
+    for (const r of live.results.filter(r => r.verdict)) body.append(verdictBox(r));
+    for (const r of live.results) {
+      const box = el('div', 'item');
+      const title = el('div', 'row');
+      title.append(el('b', null, `${r.equipped ? '[EQUIPPED] ' : ''}${r.name || '?'}`));
+      if (r.match) title.append(el('b', scoreCls(r.match.score), `${r.match.score}%`));
+      box.append(title, el('div', 'muted', r.type));
+      if (!r.match) { box.append(el('div', 'no', 'Niet in deze fase van je build.')); body.append(box); continue; }
+      box.append(el('div', 'muted', `Build ${r.match.slot}: ${r.match.want}`));
+      const pills = el('div', 'pills');
+      if (r.match.item !== null) pills.append(el('span', `pill ${r.match.item ? 'on' : 'off bad'}`, `${r.match.item ? '✓' : '✗'} juiste unique/aspect`));
+      for (const a of r.match.affixes) pills.append(el('span', `pill ${a.ok ? 'on' : 'off'}${a.tempered ? ' temper' : ''}`, `${a.ok ? '✓ ' : ''}${a.tempered ? '⚒ ' : ''}${a.text}`));
+      box.append(pills);
+      body.append(box);
+    }
+  }
+  // what every slot needs, so the build guide never has to be opened
+  if (phase?.slots && Object.keys(phase.slots).length) {
+    body.append(el('h2', null, 'Wat je nodig hebt'));
+    const scores = Object.fromEntries((p?.slots ?? []).map(s => [s.slot, s.score]));
+    for (const [slot, s] of Object.entries(phase.slots)) {
+      const box = el('div', 'item');
+      const r = el('div', 'row'); r.append(el('b', null, slot), el('b', scoreCls(scores[slot] ?? 0), `${scores[slot] ?? 0}%`));
+      box.append(r, el('div', 'muted', s.unique ? `Unique: ${s.name}` : s.aspects.map(a => a.text).join(' / ') || s.name || ''));
+      const ul = el('ul');
+      for (const a of s.affixes) ul.append(el('li', null, `· ${a.text}${a.greater ? ' (GA)' : ''}`));
+      for (const a of s.tempered) ul.append(el('li', 'muted', `~ temper: ${a.text}`));
+      if (s.sockets.length) ul.append(el('li', 'muted', `◇ sockets: ${s.sockets.join(', ').replace(/_/g, ' ')}`));
+      box.append(ul);
+      body.append(box);
+    }
+  }
+}
+
+function skillsTab(body) {
+  const sk = phase?.skills;
+  if (!sk) return body.append(el('div', 'muted', 'Geen skilldata in deze fase.'));
+  body.append(el('h2', null, 'Skill bar'));
+  const bar = el('div', 'chips');
+  sk.bar.forEach((s, i) => bar.append(el('span', 'chip', `${i + 1}. ${s}`)));
+  body.append(bar);
+  if (sk.technique) body.append(el('div', 'muted', `Techniek: ${sk.technique}`));
+  if (phase.mercenary) body.append(el('div', 'muted', `Mercenary: ${phase.mercenary.name}${phase.mercenary.support ? ` · support ${phase.mercenary.support}` : ''}`));
+  if (leveling) levelingOrder(body);
+  const last = sk.steps.at(-1);
+  if (!last) return;
+  body.append(el('h2', null, `Alle punten in "${phase.name}"`));
+  const groups = { skill: 'Skills', upgrade: 'Upgrades', passive: 'Passives', unknown: 'Overig' };
+  for (const [kind, label] of Object.entries(groups)) {
+    const nodes = last.nodes.filter(n => n.kind === kind);
+    if (!nodes.length) continue;
+    body.append(el('div', 'muted', label));
+    const ul = el('ul');
+    for (const n of nodes) {
+      const li = el('li', null, n.name);
+      li.prepend(el('span', 'rank', `${n.rank}/${n.maxRank ?? '?'}`));
+      ul.append(li);
+    }
+    body.append(ul);
+  }
+}
+
+// milestones in order; per milestone only what is added compared with the previous one
+function levelingOrder(body) {
+  body.append(el('h2', null, `Levelvolgorde (${leveling.from})`));
+  const ol = el('ol', 'order');
+  let prev = new Map();
+  leveling.steps.forEach(step => {
+    const added = step.nodes.filter(n => (prev.get(n.id) ?? 0) < n.rank);
+    const points = step.nodes.reduce((s, n) => s + n.rank, 0);
+    const li = el('li');
+    li.append(el('b', null, step.name), el('span', 'rank', `${points} pnt`));
+    const ul = el('ul');
+    for (const n of added) {
+      const from = prev.get(n.id) ?? 0;
+      ul.append(el('li', null, n.maxRank > 1 && n.kind === 'skill' ? `${n.name} ${from ? `${from} → ` : ''}${n.rank}` : n.name));
+    }
+    li.append(ul);
+    ol.append(li);
+    prev = new Map(step.nodes.map(n => [n.id, n.rank]));
+  });
+  body.append(ol, el('div', 'muted', 'Maxroll geeft mijlpalen, geen volgorde per punt: binnen een mijlpaal maakt de volgorde niet uit.'));
+}
+
+function paragonTab(body) {
+  const steps = phase?.paragon?.steps ?? [];
+  if (!steps.length) return body.append(el('div', 'muted', 'Geen paragon in deze fase.'));
+  const cur = Math.min(paragonStep ?? steps.length - 1, steps.length - 1);
+  if (steps.length > 1) body.append(stepChips(steps, cur, i => { paragonStep = i; boardIdx = 0; render(); }));
+  const boards = steps[cur].boards;
+  const bi = Math.min(boardIdx, boards.length - 1);
+  body.append(stepChips(boards.map((b, i) => ({ name: `${i + 1}. ${b.name}` })), bi, i => { boardIdx = i; render(); }));
+  const b = boards[bi];
+  body.append(el('div', 'muted', `${b.glyph ? `Glyph: ${b.glyph.name} (level ${b.glyph.level}) · ` : ''}rotatie ${b.rotation * 90}° · ${b.selected.length} nodes`));
+  if (b.missing) return body.append(el('div', 'bad', 'Board ontbreekt in de speldata.'));
+  body.append(boardSvg(b), legend());
+  const named = b.selected.filter(i => b.labels[i]).map(i => `${NAMES[b.cells[i]]}: ${b.labels[i]}`);
+  if (named.length) { body.append(el('h2', null, 'Belangrijke nodes')); const ul = el('ul'); named.forEach(n => ul.append(el('li', null, n))); body.append(ul); }
+  const big = el('button', 'chip', `⤢ Alle boards groot (${live?.hotkeys?.detail ?? ''})`);
+  big.onclick = () => t.toggleDetail();
+  body.append(big);
+}
+
+// ---------- overlay ----------
+function render() {
+  const app = document.getElementById('app');
+  const scroll = document.getElementById('body')?.scrollTop ?? 0;
+  app.replaceChildren();
+  if (isToast) return;
+  if (isDetail) return renderDetail(app);
+
+  const head = el('div', 'panel'); head.id = 'head';
+  const top = el('div', 'row top');
+  const move = el('span', 'icon grip', '⠿'); move.dataset.drag = 'move'; move.title = 'Slepen om te verplaatsen';
+  const gear = el('button', 'icon', '⚙'); gear.title = 'Builds & instellingen'; gear.onclick = () => t.openControl();
+  const scale = el('span', 'icon grip', '⤡'); scale.dataset.drag = 'scale'; scale.title = 'Naar links/rechts slepen om te schalen';
+  top.append(move, el('h1', null, buildName ?? 'Geen build'), gear, scale);
+  head.append(top);
+  if (!buildName) {
+    head.append(el('div', 'muted', 'Plak een Maxroll-link via ⚙ om te beginnen.'));
+    app.append(head);
+    return reportRects();
+  }
+  const dd = el('button', 'dd', `Fase: ${phase?.name ?? '-'} ▾`);
+  dd.onclick = () => { menuOpen = !menuOpen; render(); };
+  head.append(dd);
+  if (menuOpen) {
+    const menu = el('div', 'menu');
+    for (const name of live?.phases ?? []) {
+      const opt = el('div', `opt${name === phase?.name ? ' cur' : ''}`, name);
+      opt.onclick = () => { menuOpen = false; paragonStep = null; boardIdx = 0; t.setPhase(name); };
+      menu.append(opt);
+    }
+    head.append(menu);
+  }
+  // an open skill tree / paragon screen in the game picks the tab, unless the player chose one while it is open
+  const shown = live?.context && manualFor !== live.context ? live.context : tab;
+  if (live?.context) head.append(el('div', 'ok', live.context === 'skills' ? 'Skill tree open: dit zijn je volgende punten' : 'Paragon open: zo vul je je boards'));
+  const tabs = el('div', 'tabs');
+  for (const [id, label] of [['gear', 'Gear'], ['skills', 'Skills'], ['paragon', 'Paragon']]) {
+    const b = el('button', `tab${shown === id ? ' cur' : ''}`, label);
+    b.onclick = () => { tab = id; keep('tab', id); manualFor = live?.context ?? null; render(); };
+    tabs.append(b);
+  }
+  head.append(tabs);
+
+  const body = el('div', 'panel'); body.id = 'body';
+  ({ gear: gearTab, skills: skillsTab, paragon: paragonTab })[shown](body);
+  app.append(head, body);
+  body.scrollTop = scroll;
+  reportRects();
+}
+
+// the window is click-through except over the two panels (they hold buttons and scrollable lists)
+function reportRects() {
+  t.rects(['head', 'body'].map(id => document.getElementById(id)).filter(Boolean).map(e => { const { x, y, width, height } = e.getBoundingClientRect(); return { x, y, width, height }; }));
+}
+new ResizeObserver(() => !isDetail && reportRects()).observe(document.getElementById('app'));
+document.addEventListener('mousedown', e => { const g = e.target.closest('.grip'); if (g) { e.preventDefault(); t.dragStart(g.dataset.drag); } });
+document.addEventListener('mouseup', () => t.dragEnd());
+
+// ---------- detail view ----------
+function renderDetail(app) {
+  const panel = el('div', 'panel');
+  const top = el('div', 'row');
+  top.append(el('b', null, `${buildName ?? ''} — ${phase?.name ?? ''}`));
+  const close = el('button', `chip${live ? ' close-hint' : ''}`, live ? `✕ Sluiten (${live.hotkeys.detail})` : '✕ Sluiten');
+  close.onclick = () => t.toggleDetail();
+  top.append(close);
+  panel.append(top);
+  const steps = phase?.paragon?.steps ?? [];
+  const cols = el('div', 'cols');
+  const main = el('div'); main.id = 'detail-svg'; main.style.flex = '1';
+  if (steps.length) {
+    const cur = Math.min(paragonStep ?? steps.length - 1, steps.length - 1);
+    panel.append(stepChips(steps, cur, i => { paragonStep = i; render(); }), legend());
+    main.append(stepSvg(steps[cur].boards));
+  } else main.append(el('div', 'muted', 'Geen paragon in deze fase.'));
+  const side = el('aside');
+  skillsTab(side);
+  cols.append(main, side);
+  panel.append(cols);
+  app.append(panel);
+}
+
+if (isToast) {
+  document.body.classList.add('toast');
+  t.onToast(({ text, kind }) => { document.getElementById('app').replaceChildren(el('div', `toast-msg ${kind ?? ''}`, text)); });
+}
+t.onBuild(d => { buildName = d.name; phase = d.phase; leveling = d.leveling; render(); });
+t.onUpdate(d => {
+  live = d;
+  document.documentElement.style.setProperty('--bg', `rgba(14, 12, 10, ${d.opacity ?? 0.94})`);
+  // re-render the live Gear tab; other views only when needed, so lists keep their scroll position
+  const contextChanged = (d.context ?? null) !== lastContext;
+  lastContext = d.context ?? null;
+  if (!lastContext) manualFor = null;
+  if (isDetail ? !document.querySelector('.close-hint') : contextChanged || (lastContext ?? tab) === 'gear' || !document.getElementById('body')) render();
+});
+render();
+</script>
+</body>
+</html>

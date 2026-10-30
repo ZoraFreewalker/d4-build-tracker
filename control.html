@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>D4 Build Tracker</title>
+<style>
+  :root { --line: #6b5636; --gold: #f0c674; --text: #e8e2d4; --muted: #9a907c; }
+  body { margin: 0; padding: 20px 24px; background: #14110e; color: var(--text); font: 14px/1.45 'Segoe UI', sans-serif; }
+  h1 { font-size: 20px; color: var(--gold); margin: 0 0 4px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 8px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  input[type=text] { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: #1f1a15; border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; }
+  input[type=text]:focus, button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+  button { font: inherit; color: var(--text); background: #2e271e; border: 1px solid var(--line); border-radius: 4px; padding: 6px 14px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #3a3126; } button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: #6b4f1f; border-color: var(--gold); color: #fff3d6; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .status { margin-top: 8px; min-height: 20px; }
+  .error { color: #e07070; } .ok { color: #8fd18f; }
+  .build { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #3d3326; border-radius: 4px; margin-bottom: 6px; }
+  .build.active { border-color: var(--gold); }
+  .build b { color: var(--gold); }
+  input[type=range], input[type=checkbox] { accent-color: #d9a441; }
+  label { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .grid { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; align-items: center; }
+</style>
+</head>
+<body>
+<h1>D4 Build Tracker</h1>
+<div class="muted">Plak een build-link, speel, en laat de overlay de rest doen. Zet Diablo IV op <b>borderless/windowed</b>.</div>
+
+<h2>Build importeren</h2>
+<form id="import" class="row">
+  <input id="link" type="text" placeholder="https://maxroll.gg/d4/build-guides/…  of  planner-ID" aria-label="Maxroll build-link" autocomplete="off">
+  <button class="primary" id="go" type="submit">Importeren</button>
+</form>
+<div class="status" id="status" role="status"></div>
+
+<h2>Mijn builds</h2>
+<div id="builds"></div>
+
+<h2>Overlay</h2>
+<label><input type="checkbox" id="ocr"> Items herkennen tijdens het spelen (schermopname + OCR)</label>
+<label><input type="checkbox" id="notify"> Meldingen bij build-voortgang en upgrades (ook als de overlay verborgen is)</label>
+<label><input type="checkbox" id="locked"> Positie en grootte vastzetten</label>
+<div class="grid">
+  <span>Doorzichtigheid overlay <b id="ov-val"></b></span><input type="range" id="overlay-opacity" min="0.3" max="1" step="0.05" aria-label="Doorzichtigheid hele overlay">
+  <span>Achtergrond panelen <b id="bg-val"></b></span><input type="range" id="opacity" min="0" max="1" step="0.05" aria-label="Dekking achtergrond panelen">
+  <span>Sneltoets overlay</span><input type="text" id="hk-overlay" aria-label="Sneltoets overlay">
+  <span>Sneltoets groot paragon</span><input type="text" id="hk-detail" aria-label="Sneltoets detailweergave">
+  <span>Sneltoets scherm opslaan</span><input type="text" id="hk-capture" aria-label="Sneltoets scherm opslaan">
+</div>
+<div class="row" style="margin-top:10px">
+  <button id="save-hotkeys">Sneltoetsen opslaan</button>
+  <button id="reset">Overlay terugzetten naar standaardpositie</button>
+</div>
+<div class="row" style="margin-top:10px">
+  <button id="reset-progress">Voortgang van actieve build wissen</button>
+  <button id="open-debug">Map met opgeslagen schermen openen</button>
+</div>
+<div class="status" id="settings-status" role="status"></div>
+<div class="muted" style="margin-top:16px">In de overlay: ⠿ slepen = verplaatsen, ⤡ slepen = schalen, ⚙ = dit venster. Het tray-icoon heeft dezelfde opties.</div>
+
+<script>
+const t = window.tracker;
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const setStatus = (id, text, cls = '') => { $(id).textContent = text; $(id).className = `status ${cls}`; };
+
+async function refresh() {
+  const lib = await t.library();
+  const list = $('builds');
+  list.replaceChildren();
+  if (!lib.builds.length) list.append(el('div', 'muted', 'Nog geen builds. Plak hierboven een link.'));
+  for (const b of lib.builds) {
+    const row = el('div', `build${b.id === lib.active ? ' active' : ''}`);
+    const info = el('div');
+    info.append(el('b', null, b.name), el('div', 'muted', `${b.phases.length} fases · geïmporteerd ${new Date(b.importedAt).toLocaleString('nl-NL')}`));
+    const actions = el('div', 'row');
+    const use = el('button', null, b.id === lib.active ? 'Actief' : 'Gebruiken');
+    use.disabled = b.id === lib.active;
+    use.onclick = async () => { await t.activate(b.id); refresh(); };
+    const del = el('button', null, 'Verwijderen');
+    del.onclick = async () => { if (confirm(`"${b.name}" verwijderen? Je voortgang voor deze build gaat ook weg.`)) { await t.remove(b.id); refresh(); } };
+    actions.append(use, del);
+    row.append(info, actions);
+    list.append(row);
+  }
+  $('ocr').checked = lib.settings.ocr;
+  $('locked').checked = !!lib.window?.locked;
+  $('opacity').value = lib.settings.opacity;
+  $('overlay-opacity').value = lib.settings.overlayOpacity;
+  $('notify').checked = lib.settings.notify;
+  showPct();
+  $('hk-overlay').value = lib.settings.hotkeys.overlay;
+  $('hk-detail').value = lib.settings.hotkeys.detail;
+  $('hk-capture').value = lib.settings.hotkeys.capture;
+}
+
+$('import').onsubmit = async e => {
+  e.preventDefault();
+  const link = $('link').value.trim();
+  if (!link) return setStatus('status', 'Plak eerst een link.', 'error');
+  $('go').disabled = true;
+  setStatus('status', 'Build ophalen… (de eerste keer ook speldata, ±10 s)');
+  try {
+    const r = await t.importBuild(link);
+    setStatus('status', `✓ "${r.name}" geïmporteerd met ${r.phases} fases. De overlay staat klaar.`, 'ok');
+    $('link').value = '';
+    refresh();
+  } catch (err) {
+    setStatus('status', String(err.message || err).replace(/^Error invoking remote method 'import': (Error: )?/, ''), 'error');
+  } finally {
+    $('go').disabled = false;
+  }
+};
+
+const saveSettings = async change => {
+  const r = await t.settings(change);
+  setStatus('settings-status', r.failed.length ? `Sneltoets niet beschikbaar: ${r.failed.join(', ')}` : 'Opgeslagen.', r.failed.length ? 'error' : 'ok');
+};
+$('ocr').onchange = () => saveSettings({ ocr: $('ocr').checked });
+$('locked').onchange = () => saveSettings({ locked: $('locked').checked });
+const showPct = () => { $('ov-val').textContent = `${Math.round($('overlay-opacity').value * 100)}%`; $('bg-val').textContent = `${Math.round($('opacity').value * 100)}%`; };
+// live while dragging, so the effect is visible on the overlay right away
+$('opacity').oninput = () => { showPct(); saveSettings({ opacity: Number($('opacity').value) }); };
+$('overlay-opacity').oninput = () => { showPct(); saveSettings({ overlayOpacity: Number($('overlay-opacity').value) }); };
+$('notify').onchange = () => saveSettings({ notify: $('notify').checked });
+$('save-hotkeys').onclick = () => saveSettings({ hotkeys: { overlay: $('hk-overlay').value.trim(), detail: $('hk-detail').value.trim(), capture: $('hk-capture').value.trim() } });
+$('reset-progress').onclick = async () => {
+  if (!confirm('Voortgang (gezien equipped items) van de actieve build wissen? Hover daarna je equipped items opnieuw.')) return;
+  await t.resetProgress();
+  setStatus('settings-status', 'Voortgang gewist.', 'ok');
+};
+$('open-debug').onclick = () => t.openDebug();
+$('reset').onclick = () => saveSettings({ resetWindow: true });
+refresh();
+</script>
+</body>
+</html>
