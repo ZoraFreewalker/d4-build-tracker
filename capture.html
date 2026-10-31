@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; media-src 'self' blob: mediastream:">
+</head>
+<body>
+<script>
+// Hidden window: keeps one screen stream open so a frame costs ~20 ms instead of ~600 ms for
+// desktopCapturer.getSources() per capture. Frames are cropped, color-boosted and JPEG-encoded here.
+const cap = window.tracker;
+let stream = null, video = null;
+
+cap.onCaptureStart(async ({ sourceId, width, height }) => {
+  stop();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, minWidth: width, maxWidth: width, minHeight: height, maxHeight: height, maxFrameRate: 4 } },
+    });
+    video = document.createElement('video');
+    video.muted = true;
+    video.srcObject = stream;
+    await video.play();
+  } catch (e) {
+    console.error('capture stream failed', e);
+    stop();
+  }
+});
+cap.onCaptureStop(stop);
+function stop() {
+  stream?.getTracks().forEach(t => t.stop());
+  stream = video = null;
+}
+
+cap.onGrab(async ({ id, x, width }) => {
+  if (!video || !video.videoWidth) return cap.grabResult(id, null);
+  const height = video.videoHeight;
+  const w = Math.min(width ?? video.videoWidth, video.videoWidth - x);
+  const canvas = new OffscreenCanvas(w, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(video, x, 0, w, height, 0, 0, w, height);
+  // every pixel becomes its brightest channel: colored text (red "-21.5%") turns white for the OCR
+  const img = ctx.getImageData(0, 0, w, height);
+  const px = img.data;
+  for (let i = 0; i < px.length; i += 4) px[i] = px[i + 1] = px[i + 2] = Math.max(px[i], px[i + 1], px[i + 2]);
+  ctx.putImageData(img, 0, 0);
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+  cap.grabResult(id, new Uint8Array(await blob.arrayBuffer()));
+});
+</script>
+</body>
+</html>

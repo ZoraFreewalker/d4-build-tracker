@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { SCHEMA } from './importer.mjs';
 import { createLibrary } from './library.mjs';
 import { compare, outside, parseTooltips, progress, sameSlot, screenContext, verdict } from './tracker.mjs';
 
@@ -17,7 +18,8 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 // the .ps1 scripts must be real files for powershell, so the installer ships them next to app.asar
 const script = name => (app.isPackaged ? path.join(process.resourcesPath, name) : path.join(DIR, name));
 const ICON = path.join(DIR, 'icon.png');
-const PERIOD_MS = 500;
+const PERIOD_MS = 250; // loop tick; capturing only happens when the cursor rests (see shouldCapture)
+const REST_MS = 150, RECHECK_MS = 1500;
 const GAME_PROCESS = /^Diablo IV$/i;
 const CROP_WIDTH = 2000; // px of the frame kept around the cursor
 const FRAME = path.join(tmpdir(), 'd4-tracker-frame');
@@ -45,6 +47,17 @@ async function loadActiveBuild() {
   if (build && !phases().some(p => p.name === buildState().phase)) buildState().phase = phases()[0]?.name ?? null;
   sendBuild();
   updateVisibility();
+  upgradeBuild();
+}
+
+// builds imported by an older version miss newer fields (stat priority, drop locations): re-import them once
+const upgraded = new Set();
+function upgradeBuild() {
+  const id = build?.source?.startsWith('maxroll:') && build.source.slice('maxroll:'.length);
+  if (!id || (build.schema ?? 1) >= SCHEMA || upgraded.has(id)) return;
+  upgraded.add(id);
+  lib.import(id).then(async () => { state = await lib.state(); await loadActiveBuild(); })
+    .catch(e => console.error('re-import failed (offline?)', e.message));
 }
 
 // ---------- OCR ----------
@@ -66,20 +79,58 @@ function ocr(file) {
 // 'right' the right side (the ABILITIES panel), 'none' everything. Returns the file and the band's x offset.
 async function grabScreen({ crop = 'cursor' } = {}) {
   const d = screen.getPrimaryDisplay();
-  const thumbnailSize = { width: Math.round(d.size.width * d.scaleFactor), height: Math.round(d.size.height * d.scaleFactor) };
-  const [src] = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
-  let img = src.thumbnail, offsetX = 0;
-  const { width, height } = img.getSize();
+  const width = Math.round(d.size.width * d.scaleFactor), height = Math.round(d.size.height * d.scaleFactor);
+  let offsetX = 0, cropWidth = width;
   if (crop === 'cursor' && width > CROP_WIDTH) {
     const cx = (screen.getCursorScreenPoint().x - d.bounds.x) * d.scaleFactor;
     // tooltips open mostly to the left of the hovered item (inventory/character panel are on the right)
     offsetX = Math.round(Math.min(Math.max(0, cx - CROP_WIDTH * 0.65), width - CROP_WIDTH));
-    img = img.crop({ x: offsetX, y: 0, width: CROP_WIDTH, height });
+    cropWidth = CROP_WIDTH;
   } else if (crop === 'right') {
     offsetX = Math.round(width * 0.6);
-    img = img.crop({ x: offsetX, y: 0, width: width - offsetX, height });
+    cropWidth = width - offsetX;
   }
-  return { file: await writeFrame(maxChannel(img)), offsetX };
+  const t0 = Date.now();
+  const bytes = await grabFromStream(offsetX, cropWidth);
+  let file;
+  if (bytes) {
+    file = `${FRAME}-${Date.now()}.jpg`;
+    await writeFile(file, bytes);
+  } else {
+    // stream not running (yet): slow path, a fresh capture session per call (~600 ms)
+    const [src] = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width, height } });
+    file = await writeFrame(maxChannel(src.thumbnail.crop({ x: offsetX, y: 0, width: cropWidth, height })));
+  }
+  if (process.env.D4_DEBUG) console.log(`capture ${Date.now() - t0}ms via ${bytes ? `stream ${bytes.length} bytes` : "getSources"} (${crop})`);
+  return { file, offsetX };
+}
+
+// ---------- screen stream in a hidden window (see capture.html) ----------
+let captureWin = null, captureOn = false, grabId = 0;
+const grabs = new Map();
+function setCapture(on) {
+  if (on === captureOn) return;
+  captureOn = on;
+  if (!on) return captureWin?.webContents.send('capture-stop');
+  (async () => {
+    if (!captureWin) {
+      captureWin = new BrowserWindow({ show: false, webPreferences: { preload: path.join(DIR, 'preload.cjs'), backgroundThrottling: false } });
+      ipcMain.on('grab-result', (_e, id, bytes) => { grabs.get(id)?.(bytes ? Buffer.from(bytes) : null); grabs.delete(id); });
+      await captureWin.loadFile(path.join(DIR, 'capture.html'));
+    }
+    const d = screen.getPrimaryDisplay();
+    const [src] = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+    if (captureOn && src) captureWin.webContents.send('capture-start', { sourceId: src.id, width: Math.round(d.size.width * d.scaleFactor), height: Math.round(d.size.height * d.scaleFactor) });
+  })().catch(e => console.error('capture stream setup failed', e));
+}
+function grabFromStream(x, width) {
+  if (!captureWin || !captureOn) return Promise.resolve(null);
+  const id = ++grabId;
+  return new Promise(resolve => {
+    grabs.set(id, resolve);
+    captureWin.webContents.send('grab', { id, x, width });
+    setTimeout(() => { if (grabs.delete(id)) resolve(null); }, 2000);
+  });
 }
 
 // every pixel becomes its brightest channel: colored text (red "-21.5%", blue values) turns white for the OCR
@@ -113,17 +164,18 @@ const cursorOnOwnWindow = () => {
 
 // ---------- foreground: the overlay only lives on top of Diablo IV ----------
 // gameRunning = D4 is the foreground window (or one of our own windows, e.g. ⚙ opened from the overlay)
-let gameRunning = false, userHidden = false;
+let gameRunning = !!process.env.D4_FORCE_GAME, userHidden = false; // D4_FORCE_GAME: dev, measure capture cost without the game
 const focusProc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script('focus.ps1'), '-ParentPid', String(process.pid)], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
 readline.createInterface({ input: focusProc.stdout }).on('line', line => {
   const [pid, name] = line.split('|');
-  if (Number(pid) === process.pid) return; // our own window in front: keep the current state
+  if (Number(pid) === process.pid || process.env.D4_FORCE_GAME) return; // our own window in front: keep the current state
   gameRunning = GAME_PROCESS.test(name ?? '');
   if (process.env.D4_DEBUG) console.log('foreground', name, '-> overlay', gameRunning ? 'on' : 'off');
   updateVisibility();
 });
 
 function updateVisibility() {
+  setCapture(!imageArg && !process.env.D4_NO_STREAM && gameRunning && settings().ocr); // the screen stream only runs while D4 is in front
   const show = !!imageArg || (gameRunning && !userHidden && !!build);
   for (const w of [overlay, detail]) {
     if (!w || w.isDestroyed()) continue;
@@ -175,9 +227,9 @@ async function detectContext() {
     await keepFrame('paragon', file, lines).catch(() => {});
   }
   // a single missed read (a node tooltip covering the header) must not close the skills view: leave only
-  // after 3 misses in a row (~4.5 s)
+  // after 2 misses in a row (~6 s)
   contextMisses = next ? 0 : contextMisses + 1;
-  if (!next && context && contextMisses < 3) return;
+  if (!next && context && contextMisses < 2) return;
   if (next !== context) { context = next; send(); }
 }
 
@@ -205,11 +257,33 @@ function sendBuild() {
   send();
 }
 
+// A tooltip only shows while the cursor rests on an item, so a moving cursor costs nothing: capture as soon
+// as it has rested REST_MS, then only every RECHECK_MS while it stays on the same spot. This is what keeps
+// the game's FPS up (a full-screen capture + OCR every tick used ~60% of a CPU core).
+let lastCursor = null, restSince = 0, lastCaptureAt = 0, lastCaptureCursor = null;
+function shouldCapture() {
+  const p = screen.getCursorScreenPoint(), now = Date.now();
+  const moved = !lastCursor || Math.abs(p.x - lastCursor.x) + Math.abs(p.y - lastCursor.y) > 6;
+  lastCursor = p;
+  if (moved) {
+    restSince = now;
+    // the cursor left the item: its tooltip is gone too
+    if (lastResults.length && now - lastCaptureAt > RECHECK_MS) { lastResults = []; send({ results: [] }); }
+    return false;
+  }
+  if (now - restSince < REST_MS) return false;
+  const samePlace = lastCaptureCursor && lastCaptureCursor.x === p.x && lastCaptureCursor.y === p.y;
+  if (samePlace && now - lastCaptureAt < RECHECK_MS) return false;
+  lastCaptureAt = now;
+  lastCaptureCursor = p;
+  return true;
+}
+
 async function tick() {
   const ph = phase();
   if (!ph) return send();
   // the player is scrolling/dragging the overlay: no tooltip to read, and capturing would make it stutter
-  if (!imageArg && (dragTimer || cursorOnOwnWindow())) return;
+  if (!imageArg && (dragTimer || cursorOnOwnWindow() || !shouldCapture())) return;
   // test images go through the same color step as live frames
   const testImg = imageArg && nativeImage.createFromPath(imageArg); // empty for formats Electron can't read (webp)
   const { file: frame, offsetX } = !imageArg ? await grabScreen() : { file: testImg.isEmpty() ? imageArg : await writeFrame(maxChannel(testImg)), offsetX: 0 };
@@ -220,6 +294,7 @@ async function tick() {
   else context = screenContext(lines); // test images: detect the screen from the same frame
   const tooltips = parseTooltips(lines);
   if (!imageArg && !tooltips.length && lines.some(l => /item power/i.test(l.text))) await keepUnrecognized(frame, lines);
+  if (process.env.D4_DEBUG) console.log('ocr lines', lines.length, lines.slice(0, 3).map(l => l.text).join(' | '));
   if (process.env.D4_DEBUG) console.log('tooltips', JSON.stringify(tooltips.map(t => ({ name: t.name, equipped: t.equipped, power: t.power, deltas: t.deltas }))));
   for (const t of tooltips.filter(t => t.equipped && t.name)) rememberEquipped(t);
   const results = tooltips.map(t => {
@@ -275,7 +350,7 @@ function notify(text, kind) {
   // the first message waits for the page; isLoading() is still false right after loadFile()
   toastReady.then(() => { if (toast.isDestroyed()) return; toast.webContents.send('toast', { text, kind }); toast.showInactive(); });
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast?.isDestroyed() || toast.hide(), 4500);
+  toastTimer = setTimeout(() => toast?.isDestroyed() || toast.hide(), 2500);
 }
 
 // equipped items seen in tooltips, so a new drop can be judged without the comparison tooltip on screen.
@@ -458,6 +533,7 @@ function registerIpc() {
     next.ocr = !!next.ocr;
     next.notify = !!next.notify;
     overlay.setOpacity(next.overlayOpacity);
+    setTimeout(updateVisibility); // OCR on/off starts or stops the screen stream
     delete next.locked; delete next.resetWindow; // window state, not settings
     state.settings = next;
     if (typeof change?.locked === 'boolean') state.window.locked = change.locked;
@@ -489,6 +565,7 @@ app.whenReady().then(async () => {
   registerHotkeys();
   if (!imageArg) showControl(); // the main window is "the app": closing it quits
   updateVisibility();
+  upgradeBuild();
 
   // dev check without photographing the desktop: write PNGs of our own windows only
   if (process.env.D4_DETAIL) toggleDetail();
@@ -501,7 +578,7 @@ app.whenReady().then(async () => {
   for (let n = 0; ; n++) {
     try {
       const active = (gameRunning || !!imageArg) && settings().ocr;
-      if (active && !imageArg && n % 3 === 0) await detectContext(); // ~every 1.5 s
+      if (active && !imageArg && n % 12 === 0) await detectContext(); // every ~3 s
       else if (!active && context) { context = null; }
       if (active) await tick(); else send();
     } catch (e) {

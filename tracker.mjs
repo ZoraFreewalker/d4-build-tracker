@@ -234,7 +234,7 @@ export function compare(tooltip, phase) {
       return true;
     };
     const affixes = [...s.affixes, ...s.tempered.map(a => ({ ...a, tempered: true }))]
-      .map(a => ({ text: a.text, tempered: !!a.tempered, ok: take(a.text) }));
+      .map(a => ({ text: a.text, tempered: !!a.tempered, priority: a.priority ?? null, ok: take(a.text) }));
     // Maxroll lists more affixes than fit on a non-unique item (max 4), so cap both counts at 4
     const cap = n => Math.min(n, MAX_AFFIXES);
     const regular = affixes.filter(a => !a.tempered), tempered = affixes.filter(a => a.tempered);
@@ -326,10 +326,12 @@ export function verdict(hovered, equipped, phase) {
   }
   // what the item adds and takes away, as the game itself lists it; ★ = a stat this build uses
   const slot = h && phase.slots[h.slot.split(', ')[0]];
-  const wanted = slot ? [...slot.affixes, ...slot.tempered, ...slot.aspects].map(a => a.text) : [];
-  const forBuild = text => wanted.some(w => countText(text, w) > 0);
-  const gains = (hovered.affixLines ?? []).map(a => ({ ...a, build: forBuild(a.text) }));
-  const losses = (hovered.lost ?? []).map(text => ({ text, build: forBuild(text) }));
+  const wanted = slot ? [...slot.affixes, ...slot.tempered.map(a => ({ ...a, tempered: true })), ...slot.aspects] : [];
+  // the build affix a stat matches, with its priority (temper/aspect: no rank)
+  const buildMatch = text => wanted.find(w => countText(text, w.text) > 0);
+  const mark = text => { const w = buildMatch(text); return { build: !!w, priority: w?.priority ?? null, tempered: !!w?.tempered }; };
+  const gains = (hovered.affixLines ?? []).map(a => ({ ...a, ...mark(a.text) }));
+  const losses = (hovered.lost ?? []).map(text => ({ text, ...mark(text) }));
   // in compare mode the game marks new/higher stats with a "(+…)" and lists what you'd lose
   const comparing = losses.length || gains.some(g => g.delta);
   if (comparing) {

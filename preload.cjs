@@ -5,6 +5,11 @@ contextBridge.exposeInMainWorld('tracker', {
   onUpdate: cb => ipcRenderer.on('update', (_e, data) => cb(data)),
   onBuild: cb => ipcRenderer.on('build', (_e, data) => cb(data)),
   onToast: cb => ipcRenderer.on('toast', (_e, data) => cb(data)),
+  // hidden capture window
+  onCaptureStart: cb => ipcRenderer.on('capture-start', (_e, data) => cb(data)),
+  onCaptureStop: cb => ipcRenderer.on('capture-stop', () => cb()),
+  onGrab: cb => ipcRenderer.on('grab', (_e, data) => cb(data)),
+  grabResult: (id, bytes) => ipcRenderer.send('grab-result', id, bytes),
   rects: list => ipcRenderer.send('rects', list.map(r => ({ x: +r.x, y: +r.y, width: +r.width, height: +r.height }))),
   setPhase: name => ipcRenderer.send('phase', String(name)),
   dragStart: mode => ipcRenderer.send('drag-start', mode),

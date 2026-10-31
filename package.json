@@ -24,11 +24,32 @@
     "appId": "local.karim.d4buildtracker",
     "productName": "D4 Build Tracker",
     "files": [
-      "main.mjs", "importer.mjs", "tracker.mjs", "library.mjs", "board.mjs",
-      "preload.cjs", "overlay.html", "control.html", "icon.png", "package.json"
+      "main.mjs",
+      "importer.mjs",
+      "tracker.mjs",
+      "library.mjs",
+      "board.mjs",
+      "preload.cjs",
+      "overlay.html",
+      "control.html",
+      "icon.png",
+      "package.json",
+      "capture.html"
     ],
-    "extraResources": [{ "from": "ocr.ps1", "to": "ocr.ps1" }, { "from": "focus.ps1", "to": "focus.ps1" }],
-    "win": { "target": "nsis", "icon": "icon.png" },
+    "extraResources": [
+      {
+        "from": "ocr.ps1",
+        "to": "ocr.ps1"
+      },
+      {
+        "from": "focus.ps1",
+        "to": "focus.ps1"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.png"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

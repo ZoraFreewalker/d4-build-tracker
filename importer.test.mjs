@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render, buildFromProfile, resolveProfileId, cellCode } from './importer.mjs';
+import { render, buildFromProfile, resolveProfileId, cellCode, dropSources } from './importer.mjs';
+
+test('unique drop sources come from the boss loot pool', () => {
+  assert.deepEqual(dropSources({ families: ['GrigoireUniques'] }), ['Grigoire, the Galvanic Saint']);
+  assert.match(dropSources({ magicType: 4 })[0], /^Mythic/);
+  assert.match(dropSources({ magicType: 2 })[0], /geen vaste boss/);
+});
 
 test('paragon cell codes', () => {
   assert.equal(cellCode(null), '.');

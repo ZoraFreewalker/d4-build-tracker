@@ -25,7 +25,7 @@ function Read-Image([string]$imagePath) {
     $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
     $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
     $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-  } finally { $stream.Dispose() }
+  } finally { $stream.Dispose(); if ($bitmap) { $bitmap.Dispose() } } # the bitmap holds native memory
   $lines = foreach ($line in $result.Lines) {
     $words = @($line.Words)
     $first = $words[0].BoundingRect

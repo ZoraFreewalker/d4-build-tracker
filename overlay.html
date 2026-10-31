@@ -47,6 +47,12 @@
   .pill.loss { background: #2c1b1b; border-color: #6b3a3a; color: #f0c0c0; }
   .pill.build { border-color: var(--gold); font-weight: 600; }
   .vlabel { margin-top: 6px; }
+  .prio.p1 { --prio: #ff8000; } .prio.p2 { --prio: #ffd23f; } .prio.p3 { --prio: #6f8dff; } .prio.p4 { --prio: #b8b8b8; } .prio.pt { --prio: #c37cf2; }
+  .badge { display: inline-block; min-width: 15px; height: 15px; line-height: 15px; border-radius: 8px; margin-right: 5px; text-align: center;
+           font-size: 10px; font-weight: 700; color: #14110e; background: var(--prio, #777); vertical-align: 1px; }
+  li.prio { border-left: 3px solid var(--prio); padding-left: 5px; margin: 2px 0; }
+  .pill.prio { border-color: var(--prio); }
+  .drop { color: #e8c58a; font-size: 12px; margin-top: 2px; }
   body.toast { overflow: hidden; }
   .toast-msg { margin: 6px; padding: 12px 16px; border-radius: 8px; background: rgba(14, 12, 10, 0.95); border: 1px solid var(--line);
                border-left: 5px solid var(--gold); color: var(--text); font-size: 15px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
@@ -152,6 +158,24 @@ const stepChips = (steps, cur, onPick) => {
   return chips;
 };
 
+// ---------- stat priority: D4's own rarity colors, which every player already reads as a ranking ----------
+// 1 legendary orange, 2 rare yellow, 3 magic blue, 4+ common grey, temper purple
+const prioCls = a => (a.tempered ? 'prio pt' : a.priority ? `prio p${Math.min(a.priority, 4)}` : '');
+function prioBadge(a) {
+  const b = el('span', 'badge', a.tempered ? '⚒' : a.priority ? String(a.priority) : '');
+  if (!a.tempered && !a.priority) b.hidden = true;
+  return b;
+}
+function prioLegend() {
+  const d = el('div', 'legend muted');
+  d.append(el('span', null, 'Prioriteit (Maxroll):'));
+  for (const [cls, label] of [['p1', '1'], ['p2', '2'], ['p3', '3'], ['p4', '4+']]) {
+    const s = el('span', `prio ${cls}`); s.append(el('span', 'badge', label)); d.append(s);
+  }
+  const t = el('span', 'prio pt'); t.append(el('span', 'badge', '⚒'), 'temper'); d.append(t);
+  return d;
+}
+
 // ---------- upgrade verdict for the hovered item ----------
 const VERDICT = {
   upgrade: ['ok', '▲ Upgrade'], downgrade: ['bad', '▼ Geen upgrade'], sidegrade: ['warn', '≈ Sidegrade'],
@@ -170,12 +194,12 @@ function verdictBox(r) {
     if (!list?.length) return;
     box.append(el('div', 'muted vlabel', title));
     const pills = el('div', 'pills');
-    for (const a of list) pills.append(el('span', `pill ${cls}${a.build ? ' build' : ''}`, `${a.build ? '★ ' : ''}${a.text}${a.delta ? ` (${a.delta})` : ''}`));
+    for (const a of list) { const pill = el('span', `pill ${cls}${a.build ? ` build ${prioCls(a)}` : ''}`, `${a.text}${a.delta ? ` (${a.delta})` : ''}`); if (a.build) pill.prepend(prioBadge(a)); pills.append(pill); }
     box.append(pills);
   };
   pillRow('Dit item geeft je', v.gains, 'gain');
   pillRow('Je raakt kwijt', v.losses, 'loss');
-  if (v.gains?.some(a => a.build) || v.losses?.some(a => a.build)) box.append(el('div', 'muted', '★ = gebruikt door je build'));
+  if (v.gains?.some(a => a.build) || v.losses?.some(a => a.build)) box.append(el('div', 'muted', 'genummerd = gebruikt door je build (1 = hoogste prioriteit)'));
   box.append(el('div', 'muted', v.against ? `vergeleken met: ${v.against}` : 'Open je character-scherm en hover je equipped items voor een betere vergelijking.'));
   return box;
 }
@@ -204,7 +228,11 @@ function gearTab(body) {
     const r = el('div', 'row'); r.append(el('span', null, 'Build voltooid'), el('b', scoreCls(p.percent), `${p.percent}%`));
     const bar = el('div', 'bar'); const fill = el('div'); fill.style.width = `${p.percent}%`; bar.append(fill);
     body.append(r, bar);
-    if (p.next && p.next.score < 100) body.append(el('div', 'muted', `Volgende: ${p.next.slot}${p.next.item ? ` (nu ${p.next.score}%)` : ' (nog niet gezien)'}`));
+    if (p.next && p.next.score < 100) {
+      const need = phase?.slots?.[p.next.slot];
+      body.append(el('div', 'muted', `Volgende: ${p.next.slot}${p.next.item ? ` (nu ${p.next.score}%)` : ' (nog niet gezien)'}${need?.unique ? ` → ${need.name}` : ''}`));
+      if (need?.drops) body.append(el('div', 'drop', `📍 Drop: ${need.drops.join(' / ')}`));
+    }
     body.append(slotGrid(p.slots));
   }
   if (!live?.ocr) body.append(el('div', 'muted', 'Item-herkenning staat uit (instellingen).'));
@@ -222,22 +250,23 @@ function gearTab(body) {
       box.append(el('div', 'muted', `Build ${r.match.slot}: ${r.match.want}`));
       const pills = el('div', 'pills');
       if (r.match.item !== null) pills.append(el('span', `pill ${r.match.item ? 'on' : 'off bad'}`, `${r.match.item ? '✓' : '✗'} juiste unique/aspect`));
-      for (const a of r.match.affixes) pills.append(el('span', `pill ${a.ok ? 'on' : 'off'}${a.tempered ? ' temper' : ''}`, `${a.ok ? '✓ ' : ''}${a.tempered ? '⚒ ' : ''}${a.text}`));
+      for (const a of r.match.affixes) { const pill = el('span', `pill ${a.ok ? 'on' : 'off'} ${prioCls(a)}`, `${a.ok ? '✓ ' : ''}${a.text}`); pill.prepend(prioBadge(a)); pills.append(pill); }
       box.append(pills);
       body.append(box);
     }
   }
   // what every slot needs, so the build guide never has to be opened
   if (phase?.slots && Object.keys(phase.slots).length) {
-    body.append(el('h2', null, 'Wat je nodig hebt'));
+    body.append(el('h2', null, 'Wat je nodig hebt'), prioLegend());
     const scores = Object.fromEntries((p?.slots ?? []).map(s => [s.slot, s.score]));
     for (const [slot, s] of Object.entries(phase.slots)) {
       const box = el('div', 'item');
       const r = el('div', 'row'); r.append(el('b', null, slot), el('b', scoreCls(scores[slot] ?? 0), `${scores[slot] ?? 0}%`));
       box.append(r, el('div', 'muted', s.unique ? `Unique: ${s.name}` : s.aspects.map(a => a.text).join(' / ') || s.name || ''));
+      if (s.drops) box.append(el('div', 'drop', `📍 Drop: ${s.drops.join(' / ')}`));
       const ul = el('ul');
-      for (const a of s.affixes) ul.append(el('li', null, `· ${a.text}${a.greater ? ' (GA)' : ''}`));
-      for (const a of s.tempered) ul.append(el('li', 'muted', `~ temper: ${a.text}`));
+      for (const a of s.affixes) { const li = el('li', prioCls(a), `${a.text}${a.greater ? ' (GA)' : ''}`); li.prepend(prioBadge(a)); ul.append(li); }
+      for (const a of s.tempered) { const li = el('li', 'prio pt', a.text); li.prepend(prioBadge({ tempered: true })); ul.append(li); }
       if (s.sockets.length) ul.append(el('li', 'muted', `◇ sockets: ${s.sockets.join(', ').replace(/_/g, ' ')}`));
       box.append(ul);
       body.append(box);

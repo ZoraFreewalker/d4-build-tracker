@@ -154,6 +154,29 @@ function makeParagon(min, en) {
   return p => ({ steps: (p.paragon?.steps ?? []).map(s => ({ name: s.name, boards: (s.data ?? []).map(board) })) });
 }
 
+// bump when the build file gets new fields: the app re-imports older builds automatically
+export const SCHEMA = 2;
+
+// unique items carry their boss loot pool ("families" in the game data); the game's tooltip names the same boss
+const LOOT_POOLS = {
+  AndarielUniques: 'Andariel, Maiden of Anguish',
+  AstarothUniques: 'Astaroth',
+  BartucUniques: 'Bartuc',
+  BeastInTheIceUniques: 'The Beast in the Ice',
+  DurielUniques: 'Duriel, King of Maggots',
+  GrigoireUniques: 'Grigoire, the Galvanic Saint',
+  HarbingerUniques: 'Harbinger of Hatred',
+  LordZirUniques: 'Lord Zir',
+  UrivarUniques: 'Urivar',
+  VarshanUniques: 'Echo of Varshan',
+  WorldUniques: 'overal (world drop, geen vaste boss)',
+};
+export function dropSources(item) {
+  if (item?.families?.length) return item.families.map(f => LOOT_POOLS[f] ?? f.replace(/Uniques$/, ''));
+  if (item?.magicType === 4) return ['Mythic: kans bij lair-bosses in Torment, of maken via de Horadric Cube'];
+  return ['geen vaste boss: gewone drop overal in de wereld'];
+}
+
 export function buildFromProfile(profile, min, en) {
   const data = typeof profile.data === 'string' ? JSON.parse(profile.data) : profile.data;
   const affixText = makeLookup(min, en);
@@ -172,10 +195,12 @@ export function buildFromProfile(profile, min, en) {
         unique: /_Unique_/.test(it.id),
         name: en.items[it.id]?.name ?? it.name ?? null,
         aspects: (it.aspects ?? []).map(affixText),
-        affixes: (it.explicits ?? []).map(a => ({ ...affixText(a), greater: !!a.greater })),
+        // the guide's "Gear & Stat Priorities" lists the affixes in the order the author put them in the planner
+        affixes: (it.explicits ?? []).map((a, i) => ({ ...affixText(a), greater: !!a.greater, priority: i + 1 })),
         implicits: (it.implicits ?? []).map(affixText),
         tempered: (it.tempered ?? []).map(affixText),
         sockets: (it.sockets ?? []).filter(Boolean),
+        drops: /_Unique_/.test(it.id) ? dropSources(min.items[it.id]) : null,
       };
     }
     const merc = p.mercenary?.id ? {
@@ -192,7 +217,7 @@ export function buildFromProfile(profile, min, en) {
       mercenary: merc,
     };
   });
-  return { source: `maxroll:${profile.id}`, name: profile.name, season: data.season ?? null, importedAt: new Date().toISOString(), phases };
+  return { schema: SCHEMA, source: `maxroll:${profile.id}`, name: profile.name, season: data.season ?? null, importedAt: new Date().toISOString(), phases };
 }
 
 async function main([input, out = 'build.json']) {
