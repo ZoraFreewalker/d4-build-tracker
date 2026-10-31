@@ -27,7 +27,7 @@ test('weapon tooltips: "(Bludgeoning)" type, DPS delta, lost properties (real OC
   assert.equal(club.equipped, true);
   assert.equal(sword.slotType, 'Sword');
   assert.equal(sword.power, 82);
-  assert.deepEqual(sword.deltas, { damage: 3.8 });
+  assert.deepEqual(sword.deltas, { damage: 3.8, dpsOnly: true });
   assert.ok(!/Weapon Damage/.test(sword.body), 'lost properties are not part of the item');
 });
 
@@ -71,9 +71,35 @@ test('affix rows: game deltas, wrapped lines, build marks and lost properties in
     affixLines: [{ text: '+2 Strength', delta: '+2' }, { text: '+2 Maximum Resource', delta: '+2' }],
     lost: ['+1 Life Regeneration', '+1 Maximum Life'] };
   const v = verdict(garb, null, phase);
-  assert.deepEqual(v.gains.map(g => [g.text, g.build]), [['+2 Strength', true], ['+2 Maximum Resource', false]]);
-  assert.deepEqual(v.losses.map(g => [g.text, g.build]), [['+1 Life Regeneration', false], ['+1 Maximum Life', true]]);
+  assert.deepEqual(v.better.map(g => [g.text, g.build]), [['+2 Strength', true], ['+2 Maximum Resource', false]]);
+  assert.deepEqual(v.lost.map(g => [g.text, g.build]), [['+1 Life Regeneration', false], ['+1 Maximum Life', true]]);
   assert.equal(v.kind, 'upgrade'); // +toughness, 2 stats up vs 2 lost: toughness decides
+});
+
+test('screenshot: The Ward vs Battle Agent - lower stats are red and losing a priority stat makes it no upgrade', () => {
+  const phase = { slots: { Sword: { unique: false, aspects: [], name: 'Obsidian Blade',
+    affixes: [{ text: 'x8% Physical Damage Multiplier', priority: 1 }, { text: '45 Strength', priority: 2 }, { text: '+170 Maximum Life', priority: 3 }, { text: '+39 Life On Hit', priority: 4 }],
+    tempered: [{ text: '+40% Damage to Close Enemies' }] } } };
+  const ward = { slotType: 'Flail', name: 'THE WARD', power: 215, deltas: { damage: 6.3, dpsOnly: true },
+    body: '+3 Weapon Damage +15 Maximum Life +1 Life on Kill',
+    affixLines: [{ text: '+3 Weapon Damage', delta: '+3' }, { text: '+15 Maximum Life', delta: '-1' }, { text: '+1 Life on Kill', delta: '+1' }],
+    lost: ['x4% All Damage Multiplier', '+17 Strength'] };
+  const v = verdict(ward, null, phase);
+  assert.deepEqual(v.better.map(a => a.text), ['+3 Weapon Damage', '+1 Life on Kill']);
+  assert.deepEqual(v.lower.map(a => [a.text, a.priority]), [['+15 Maximum Life', 3]]);
+  assert.deepEqual(v.lost.map(a => [a.text, a.priority]), [['x4% All Damage Multiplier', null], ['+17 Strength', 2]]);
+  assert.equal(v.kind, 'downgrade');
+  assert.ok(v.neg.some(r => /kwijt: .*② Strength/.test(r)), v.neg.join(' | '));
+  assert.ok(v.pos.some(r => /wapen-DPS/.test(r)));
+
+  // real OCR: the red "(-1)" came out as "(A)" and "+[1]" as "+111"; the equipped item settles the sign
+  assert.deepEqual(affixEntries(['+15 Maximum Life 113-161 (A)', '+1 Life on Kill +111 (+1)']),
+    [{ text: '+15 Maximum Life', delta: null, unreadable: true }, { text: '+1 Life on Kill', delta: '+1' }]);
+  const ocrWard = { ...ward, affixLines: [{ text: '+3 Weapon Damage', delta: '+3' }, { text: '+15 Maximum Life', delta: null }, { text: '+1 Life on Kill', delta: '+1' }] };
+  const agent = { slotType: 'Flail', name: 'BATTLE AGENT', power: 215, body: '+17 Strength +16 Maximum Life x4% All Damage Multiplier' };
+  const v2 = verdict(ocrWard, agent, phase);
+  assert.deepEqual(v2.lower.map(a => [a.text, a.delta]), [['+15 Maximum Life', '-1']]);
+  assert.equal(v2.kind, 'downgrade');
 });
 
 test('upgrade verdict combines game deltas, build fit, values and item power', () => {

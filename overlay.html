@@ -44,8 +44,9 @@
   .pill.off { background: #1c1814; color: var(--no); }
   .pill.off.bad { color: var(--bad); border-color: #6b3a3a; }
   .pill.gain { background: #1d2a1d; border-color: #35553a; color: #cfe8cf; }
-  .pill.loss { background: #2c1b1b; border-color: #6b3a3a; color: #f0c0c0; }
+  .pill.loss, .pill.loss.build { background: #2c1b1b; border-color: #b04a4a; color: #f0c0c0; }
   .pill.build { border-color: var(--gold); font-weight: 600; }
+  .pill.same { background: #1c1814; color: #cfc6b4; }
   .vlabel { margin-top: 6px; }
   .prio.p1 { --prio: #ff8000; } .prio.p2 { --prio: #ffd23f; } .prio.p3 { --prio: #6f8dff; } .prio.p4 { --prio: #b8b8b8; } .prio.pt { --prio: #c37cf2; }
   .badge { display: inline-block; min-width: 15px; height: 15px; line-height: 15px; border-radius: 8px; margin-right: 5px; text-align: center;
@@ -162,7 +163,8 @@ const stepChips = (steps, cur, onPick) => {
 // 1 legendary orange, 2 rare yellow, 3 magic blue, 4+ common grey, temper purple
 const prioCls = a => (a.tempered ? 'prio pt' : a.priority ? `prio p${Math.min(a.priority, 4)}` : '');
 function prioBadge(a) {
-  const b = el('span', 'badge', a.tempered ? '⚒' : a.priority ? String(a.priority) : '');
+  // the badge carries its own color, so a red "lost" pill can still show the priority
+  const b = el('span', `badge ${prioCls(a)}`, a.tempered ? '⚒' : a.priority ? String(a.priority) : '');
   if (!a.tempered && !a.priority) b.hidden = true;
   return b;
 }
@@ -194,12 +196,18 @@ function verdictBox(r) {
     if (!list?.length) return;
     box.append(el('div', 'muted vlabel', title));
     const pills = el('div', 'pills');
-    for (const a of list) { const pill = el('span', `pill ${cls}${a.build ? ` build ${prioCls(a)}` : ''}`, `${a.text}${a.delta ? ` (${a.delta})` : ''}`); if (a.build) pill.prepend(prioBadge(a)); pills.append(pill); }
+    // lower/lost stay fully red; better/equal take the priority color as border
+    for (const a of list) { const pill = el('span', `pill ${cls}${a.build ? ` build${cls === 'loss' ? '' : ` ${prioCls(a)}`}` : ''}`, `${a.text}${a.delta ? ` (${a.delta})` : ''}`); if (a.build) pill.prepend(prioBadge(a)); pills.append(pill); }
     box.append(pills);
   };
-  pillRow('Dit item geeft je', v.gains, 'gain');
-  pillRow('Je raakt kwijt', v.losses, 'loss');
-  if (v.gains?.some(a => a.build) || v.losses?.some(a => a.build)) box.append(el('div', 'muted', 'genummerd = gebruikt door je build (1 = hoogste prioriteit)'));
+  // grouped by the game's own difference sign: green better/new, red lower or lost, grey unchanged
+  pillRow('▲ Beter of nieuw', v.better, 'gain');
+  pillRow('▼ Lager dan nu', v.lower, 'loss');
+  pillRow('▼ Je raakt kwijt', v.lost, 'loss');
+  pillRow('= Gelijk', v.equal, 'same');
+  pillRow('Stats van dit item', v.stats, 'same'); // no compare tooltip: no differences known
+  const all = [v.better, v.lower, v.lost, v.equal, v.stats].flat().filter(Boolean);
+  if (all.some(a => a.build)) box.append(el('div', 'muted', 'genummerd = gebruikt door je build (1 = hoogste prioriteit)'));
   box.append(el('div', 'muted', v.against ? `vergeleken met: ${v.against}` : 'Open je character-scherm en hover je equipped items voor een betere vergelijking.'));
   return box;
 }

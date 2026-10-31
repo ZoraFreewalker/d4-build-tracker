@@ -51,7 +51,7 @@ export function gameDeltas(text) {
   if (dps && out.damage === undefined) {
     const diff = (dps[2] === '+' ? 1 : -1) * num(dps[3]);
     const equippedDps = num(dps[1]) - diff;
-    if (equippedDps > 0) out.damage = Math.round((diff / equippedDps) * 1000) / 10;
+    if (equippedDps > 0) { out.damage = Math.round((diff / equippedDps) * 1000) / 10; out.dpsOnly = true; }
   }
   return out;
 }
@@ -88,12 +88,16 @@ export function affixEntries(rows) {
   }
   return entries.map(({ raw }) => {
     const delta = /\(\s*([+\-−–]\s*\d[\d,.]*%?)\s*\)\s*$/.exec(raw)?.[1].replace(/\s/g, '').replace(/[−–]/, '-') ?? null;
-    const text = raw.replace(/\(\s*[+\-−–]\s*\d[\d,.]*%?\s*\)\s*$/, '')
+    // a short "(…)" that isn't a readable difference: the red/green value was there but OCR mangled it ("(A)")
+    const unreadable = !delta && /\(\s*[^()]{1,4}\s*\)\s*$/.test(raw);
+    const text = raw.replace(/\(\s*[+\-−–]\s*\d[\d,.]*%?\s*\)\s*$/, '').replace(/\(\s*[^()]{1,4}\s*\)\s*$/, '')
       .replace(/\+?\s*\[[^\]]*\]?\s*%?/g, ' ')
       // value ranges whose brackets OCR read as "1" or dropped: "+[1 - 7]" -> "+11 - 71" / "- 71"
       .replace(/\s\+?\d*[\d.,]*\s*[-–]\s*\d[\d.,]*\]?%?(?=\s|$)/g, ' ')
+      // a single-value range "+[1]" read as "+111" after the stat name
+      .replace(/(?<=[a-z])\s+\+\d[\d.,]*%?(?=\s|$)/gi, ' ')
       .replace(/\s+/g, ' ').trim();
-    return { text, delta };
+    return unreadable ? { text, delta, unreadable } : { text, delta };
   }).filter(e => e.text.length > 2);
 }
 
@@ -292,53 +296,75 @@ export function screenContext(lines) {
   return has(/available points|skill assignment|respec mode/i) ? 'skills' : 'paragon';
 }
 
-// Is the hovered item an upgrade over the equipped one? Combines the game's own damage/toughness delta
-// (strongest signal), build fit, higher values on the build affixes and item power. Returns kind + reasons.
+// Is the hovered item an upgrade over the equipped one? Weighs the game's own figures (damage/toughness delta,
+// per-stat "(+2)"/"(-1)" and "Properties lost when equipped"), build stats by their guide priority, and item
+// power. Returns kind + reasons + the item's stats grouped as better / lower / equal / lost.
+const PRIORITY_WEIGHT = { 1: 1.5, 2: 1.2, 3: 0.9 }; // 4+ and unranked build stats: 0.6, temper 0.9
+function statWeight(stat) {
+  if (stat.tempered) return 0.9;
+  if (stat.build) return PRIORITY_WEIGHT[stat.priority] ?? (stat.priority ? 0.6 : 0.9);
+  return /^x\d/i.test(stat.text) ? 0.8 : 0.4; // multiplicative damage is strong even outside the build
+}
+const statName = s => `${s.build && s.priority ? `${'①②③④⑤⑥⑦⑧⑨'[s.priority - 1] ?? s.priority} ` : ''}${s.text.replace(/^[+x]?[\d.,]+%?\s+/i, '')}`;
+
 export function verdict(hovered, equipped, phase) {
   const pos = [], neg = [];
   let total = 0;
-  const add = (weight, diff, text) => {
-    if (!diff) return;
-    total += Math.sign(diff) * weight;
-    (diff > 0 ? pos : neg).push(text);
+  const add = (value, text) => {
+    if (!value) return;
+    total += value;
+    (value > 0 ? pos : neg).push(text);
   };
   const pct = v => `${v > 0 ? '+' : ''}${Math.round(v * 10) / 10}%`;
-  const { damage, toughness } = hovered.deltas ?? {};
-  if (damage !== undefined) add(2, damage, `${pct(damage)} damage`);
-  if (toughness !== undefined) add(1, toughness, `${pct(toughness)} toughness`);
+  const { damage, toughness, dpsOnly } = hovered.deltas ?? {};
+  // a weapon's DPS delta only covers the weapon itself, not the stats it adds or removes
+  if (damage !== undefined) add(Math.sign(damage) * (dpsOnly ? 1 : 2), `${pct(damage)} ${dpsOnly ? 'wapen-DPS' : 'damage'}`);
+  if (toughness !== undefined) add(Math.sign(toughness), `${pct(toughness)} toughness`);
 
+  // the item's stats, marked when the build uses them (with the guide's priority)
   const h = compare(hovered, phase);
-  const e = equipped ? compare(equipped, phase) : null;
-  if (h && e) {
-    add(1.5, h.score - e.score, `build ${h.score}% (nu ${e.score}%)`);
-    let better = 0, worse = 0;
-    for (const a of h.affixes.filter(a => a.ok && !a.tempered)) {
-      if (!e.affixes.find(b => b.text === a.text)?.ok) continue;
-      const hv = affixValue(hovered.body, a.text), ev = affixValue(equipped.body, a.text);
-      if (hv == null || ev == null || hv === ev) continue;
-      hv > ev ? better++ : worse++;
+  const slot = h && phase.slots[h.slot.split(', ')[0]];
+  const wanted = slot ? [...slot.affixes, ...slot.tempered.map(a => ({ ...a, tempered: true })), ...slot.aspects] : [];
+  const mark = text => { const w = wanted.find(b => countText(text, b.text) > 0); return { build: !!w, priority: w?.priority ?? null, tempered: !!w?.tempered }; };
+  const stats = (hovered.affixLines ?? []).map(a => ({ ...a, ...mark(a.text) }));
+  // no readable difference from the game: compare with the same stat on the equipped item ourselves
+  for (const a of stats.filter(a => !a.delta && equipped)) {
+    const own = num(/^[+x]?(\d[\d.,]*)/i.exec(a.text)?.[1] ?? NaN), other = affixValue(equipped.body, a.text);
+    if (Number.isFinite(own) && other != null && own !== other) a.delta = `${own > other ? '+' : '-'}${Math.round(Math.abs(own - other) * 10) / 10}`;
+  }
+  const lost = (hovered.lost ?? []).map(text => ({ text, ...mark(text) }));
+  // compare mode: the game marks every changed stat with "(+…)"/"(-…)" and lists what you'd lose
+  const comparing = lost.length > 0 || stats.some(a => a.delta);
+  const better = comparing ? stats.filter(a => a.delta && !a.delta.startsWith('-')) : [];
+  const lower = comparing ? stats.filter(a => a.delta?.startsWith('-')) : [];
+  const equal = comparing ? stats.filter(a => !a.delta) : [];
+  if (comparing) {
+    const group = (list, sign, factor, label) => list.length
+      && add(sign * factor * list.reduce((n, a) => n + statWeight(a), 0), `${label}: ${list.map(statName).join(', ')}`);
+    group(better, 1, 1, 'beter of nieuw');
+    group(lower, -1, 0.5, 'lager'); // a smaller roll of a stat you keep
+    group(lost, -1, 1, 'kwijt');
+  } else {
+    // no compare tooltip: fall back on build fit and own value comparison against the remembered item
+    const e = equipped ? compare(equipped, phase) : null;
+    if (h && e) {
+      add(Math.sign(h.score - e.score) * 1.5, `build ${h.score}% (nu ${e.score}%)`);
+      let up = 0, down = 0;
+      for (const a of h.affixes.filter(a => a.ok && !a.tempered)) {
+        if (!e.affixes.find(b => b.text === a.text)?.ok) continue;
+        const hv = affixValue(hovered.body, a.text), ev = affixValue(equipped.body, a.text);
+        if (hv == null || ev == null || hv === ev) continue;
+        hv > ev ? up++ : down++;
+      }
+      add(Math.sign(up - down) * 0.5, `${up} hogere / ${down} lagere waarden`);
     }
-    add(0.5, better - worse, `${better} hogere / ${worse} lagere waarden`);
   }
   if (equipped && hovered.power && equipped.power) {
     const d = hovered.power - equipped.power;
-    if (Math.abs(d) >= 25) add(0.5, d, `${d > 0 ? '+' : ''}${d} item power`);
+    if (Math.abs(d) >= 25) add(Math.sign(d) * 0.5, `${d > 0 ? '+' : ''}${d} item power`);
   }
-  // what the item adds and takes away, as the game itself lists it; ★ = a stat this build uses
-  const slot = h && phase.slots[h.slot.split(', ')[0]];
-  const wanted = slot ? [...slot.affixes, ...slot.tempered.map(a => ({ ...a, tempered: true })), ...slot.aspects] : [];
-  // the build affix a stat matches, with its priority (temper/aspect: no rank)
-  const buildMatch = text => wanted.find(w => countText(text, w.text) > 0);
-  const mark = text => { const w = buildMatch(text); return { build: !!w, priority: w?.priority ?? null, tempered: !!w?.tempered }; };
-  const gains = (hovered.affixLines ?? []).map(a => ({ ...a, ...mark(a.text) }));
-  const losses = (hovered.lost ?? []).map(text => ({ text, ...mark(text) }));
-  // in compare mode the game marks new/higher stats with a "(+…)" and lists what you'd lose
-  const comparing = losses.length || gains.some(g => g.delta);
-  if (comparing) {
-    const up = gains.filter(g => g.delta && !g.delta.startsWith('-')).length;
-    add(0.5, up - losses.length, `${up} eigenschap${up === 1 ? '' : 'pen'} erbij of hoger, ${losses.length} kwijt`);
-  }
-  if (!pos.length && !neg.length) return { kind: equipped || h ? 'equal' : 'unknown', pos, neg, gains, losses };
+  const groups = comparing ? { better, lower, equal, lost } : { stats };
+  if (!pos.length && !neg.length) return { kind: equipped || h ? 'equal' : 'unknown', pos, neg, ...groups };
   const kind = !neg.length ? 'upgrade' : !pos.length ? 'downgrade' : total > 0.5 ? 'upgrade' : total < -0.5 ? 'downgrade' : 'sidegrade';
-  return { kind, pos, neg, gains, losses };
+  return { kind, pos, neg, total: Math.round(total * 100) / 100, ...groups };
 }
