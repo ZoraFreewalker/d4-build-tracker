@@ -23,11 +23,13 @@
   .build b { color: var(--gold); }
   input[type=range], input[type=checkbox] { accent-color: #d9a441; }
   label { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .update { margin: 8px 0 12px; padding: 8px 12px; border: 1px solid var(--gold); border-radius: 4px; background: #2e271e; }
   .grid { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; align-items: center; }
 </style>
 </head>
 <body>
 <h1>D4 Build Tracker</h1>
+<div id="update" class="update" hidden><span id="update-text"></span> <button id="update-now" class="primary">Nu herstarten</button></div>
 <div class="muted">Plak een build-link, speel, en laat de overlay de rest doen. Zet Diablo IV op <b>borderless/windowed</b>.</div>
 
 <h2>Build importeren</h2>
@@ -48,6 +50,7 @@
   <span>Doorzichtigheid overlay <b id="ov-val"></b></span><input type="range" id="overlay-opacity" min="0.3" max="1" step="0.05" aria-label="Doorzichtigheid hele overlay">
   <span>Achtergrond panelen <b id="bg-val"></b></span><input type="range" id="opacity" min="0" max="1" step="0.05" aria-label="Dekking achtergrond panelen">
   <span>Sneltoets overlay</span><input type="text" id="hk-overlay" aria-label="Sneltoets overlay">
+  <span>Sneltoets bedienmodus</span><input type="text" id="hk-exclusive" aria-label="Sneltoets bedienmodus">
   <span>Sneltoets groot paragon</span><input type="text" id="hk-detail" aria-label="Sneltoets detailweergave">
   <span>Sneltoets scherm opslaan</span><input type="text" id="hk-capture" aria-label="Sneltoets scherm opslaan">
 </div>
@@ -68,8 +71,14 @@ const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const setStatus = (id, text, cls = '') => { $(id).textContent = text; $(id).className = `status ${cls}`; };
 
+const showUpdate = v => { if (!v) return; $('update-text').textContent = `Versie ${v} is gedownload.`; $('update').hidden = false; };
+$('update-now').onclick = () => t.installUpdate();
+t.onUpdateReady(showUpdate);
+
 async function refresh() {
   const lib = await t.library();
+  showUpdate(lib.updateReady);
+  document.title = `D4 Build Tracker ${lib.version}`;
   const list = $('builds');
   list.replaceChildren();
   if (!lib.builds.length) list.append(el('div', 'muted', 'Nog geen builds. Plak hierboven een link.'));
@@ -95,6 +104,7 @@ async function refresh() {
   showPct();
   $('hk-overlay').value = lib.settings.hotkeys.overlay;
   $('hk-detail').value = lib.settings.hotkeys.detail;
+  $('hk-exclusive').value = lib.settings.hotkeys.exclusive;
   $('hk-capture').value = lib.settings.hotkeys.capture;
 }
 
@@ -127,7 +137,7 @@ const showPct = () => { $('ov-val').textContent = `${Math.round($('overlay-opaci
 $('opacity').oninput = () => { showPct(); saveSettings({ opacity: Number($('opacity').value) }); };
 $('overlay-opacity').oninput = () => { showPct(); saveSettings({ overlayOpacity: Number($('overlay-opacity').value) }); };
 $('notify').onchange = () => saveSettings({ notify: $('notify').checked });
-$('save-hotkeys').onclick = () => saveSettings({ hotkeys: { overlay: $('hk-overlay').value.trim(), detail: $('hk-detail').value.trim(), capture: $('hk-capture').value.trim() } });
+$('save-hotkeys').onclick = () => saveSettings({ hotkeys: { overlay: $('hk-overlay').value.trim(), detail: $('hk-detail').value.trim(), exclusive: $('hk-exclusive').value.trim(), capture: $('hk-capture').value.trim() } });
 $('reset-progress').onclick = async () => {
   if (!confirm('Voortgang (gezien equipped items) van de actieve build wissen? Hover daarna je equipped items opnieuw.')) return;
   await t.resetProgress();

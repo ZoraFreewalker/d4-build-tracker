@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import updaterPkg from 'electron-updater';
 import { SCHEMA } from './importer.mjs';
 import { createLibrary } from './library.mjs';
 import { compare, outside, parseTooltips, progress, sameSlot, screenContext, verdict } from './tracker.mjs';
@@ -26,7 +27,7 @@ const FRAME = path.join(tmpdir(), 'd4-tracker-frame');
 const BASE = { width: 380, height: 620 }; // overlay size at scale 1
 const SCALE_MIN = 0.5, SCALE_MAX = 2.5;
 const MIN_HEIGHT = 160; // DIP, enough for the header
-const DEFAULT_SETTINGS = { ocr: true, notify: true, opacity: 0.94, overlayOpacity: 1, hotkeys: { overlay: 'Alt+Shift+O', detail: 'Alt+Shift+B', capture: 'Alt+Shift+S' } };
+const DEFAULT_SETTINGS = { ocr: true, notify: true, opacity: 0.94, overlayOpacity: 1, hotkeys: { overlay: 'Alt+Shift+O', exclusive: 'Alt+Shift+I', detail: 'Alt+Shift+B', capture: 'Alt+Shift+S' } };
 const imageArg = process.argv.includes('--image') ? path.resolve(process.argv[process.argv.indexOf('--image') + 1]) : null;
 
 if (process.env.D4_USER_DATA) app.setPath('userData', process.env.D4_USER_DATA); // dev: fresh profile
@@ -176,6 +177,7 @@ readline.createInterface({ input: focusProc.stdout }).on('line', line => {
 });
 
 function updateVisibility() {
+  if (exclusive && !(gameRunning || imageArg)) toggleExclusive(false); // alt-tabbed away: drop the dim layer too
   setCapture(!imageArg && !process.env.D4_NO_STREAM && gameRunning && settings().ocr); // the screen stream only runs while D4 is in front
   const show = !!imageArg || (gameRunning && !userHidden && !!build);
   for (const w of [overlay, detail]) {
@@ -256,7 +258,7 @@ function send(extra = {}) {
   const ph = phase();
   const data = JSON.stringify({
     build: build?.name ?? null, phase: ph?.name ?? null, phases: phases().map(p => p.name),
-    gameRunning: gameRunning || !!imageArg, ocr: settings().ocr, hotkeys: settings().hotkeys, opacity: settings().opacity,
+    gameRunning: gameRunning || !!imageArg, ocr: settings().ocr, hotkeys: settings().hotkeys, opacity: settings().opacity, exclusive,
     progress: ph ? progress(ph, buildState().seen[ph.name]) : null, current: ph ? currentGear(ph) : {}, context, results: [], ...extra,
   });
   if (data === lastSent) return;
@@ -300,7 +302,7 @@ async function tick() {
   const ph = phase();
   if (!ph) return send();
   // the player is scrolling/dragging the overlay: no tooltip to read, and capturing would make it stutter
-  if (!imageArg && (dragTimer || cursorOnOwnWindow() || !shouldCapture())) return;
+  if (!imageArg && (dragTimer || exclusive || cursorOnOwnWindow() || !shouldCapture())) return;
   // test images go through the same color step as live frames
   const testImg = imageArg && nativeImage.createFromPath(imageArg); // empty for formats Electron can't read (webp)
   const { file: frame, offsetX } = !imageArg ? await grabScreen() : { file: testImg.isEmpty() ? imageArg : await writeFrame(maxChannel(testImg)), offsetX: 0 };
@@ -443,10 +445,40 @@ function watchInteractive(win, scaleOf, rectsRef) {
   setInterval(() => {
     if (win.isDestroyed() || !win.isVisible()) return;
     const p = screen.getCursorScreenPoint(), b = win.getBounds(), s = scaleOf();
-    const inside = (win === overlay && !!dragTimer) || rectsRef().some(r => p.x >= b.x + r.x * s && p.x <= b.x + (r.x + r.width) * s
+    const inside = (win === overlay && (!!dragTimer || exclusive)) || rectsRef().some(r => p.x >= b.x + r.x * s && p.x <= b.x + (r.x + r.width) * s
       && p.y >= b.y + r.y * s && p.y <= b.y + (r.y + r.height) * s);
     if (inside !== interactive) win.setIgnoreMouseEvents(!(interactive = inside));
   }, 50);
+}
+
+// ---------- exclusive mode (as in Overwolf): the overlay takes the mouse, the game is dimmed ----------
+// A dim layer over the screen catches clicks and Esc so nothing reaches the game; the overlay stays on top
+// and is fully clickable. The same hotkey, Esc or a click on the dim layer goes back to the game.
+let exclusive = false, dimWin = null;
+function toggleExclusive(force) {
+  const on = typeof force === 'boolean' ? force : !exclusive;
+  if (process.env.D4_DEBUG) console.log('exclusive ->', on, 'overlay visible', overlay.isVisible(), 'build', !!build);
+  if (on && (!overlay.isVisible() || !build)) return;
+  exclusive = on;
+  if (on) {
+    const { bounds } = screen.getDisplayMatching(overlay.getBounds()); // the screen the overlay (and so the game) is on
+    if (!dimWin || dimWin.isDestroyed()) {
+      dimWin = new BrowserWindow({
+        ...bounds, show: false, transparent: true, frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: false,
+        webPreferences: { preload: path.join(DIR, 'preload.cjs') },
+      });
+      dimWin.setAlwaysOnTop(true, 'screen-saver');
+      dimWin.loadFile(path.join(DIR, 'overlay.html'), { hash: 'dim' });
+    }
+    dimWin.setBounds(bounds);
+    dimWin.show();
+    dimWin.focus(); // receives Esc; the focus watcher ignores our own windows, so the overlay stays visible
+    overlay.moveTop();
+  } else if (dimWin && !dimWin.isDestroyed()) {
+    dimWin.hide(); // Windows hands the focus back to the game window below
+  }
+  lastSent = '';
+  send();
 }
 
 function createOverlay() {
@@ -494,6 +526,24 @@ function showControl() {
   control.loadFile(path.join(DIR, 'control.html'));
 }
 
+// ---------- automatic updates from GitHub Releases ----------
+// The installed app checks the public repo's releases, downloads a newer version in the background and
+// installs it on the next quit, or right away from the main window ("Nu herstarten").
+const { autoUpdater } = updaterPkg;
+let updateReady = null;
+function setupUpdates() {
+  if (!app.isPackaged) return;
+  autoUpdater.on('update-downloaded', info => {
+    updateReady = info.version;
+    control?.isDestroyed() || control?.webContents.send('update-ready', updateReady);
+    notify(`Update ${updateReady} staat klaar: wordt geïnstalleerd bij afsluiten`, 'ok');
+  });
+  autoUpdater.on('error', e => console.error('update check failed', e.message));
+  const check = () => autoUpdater.checkForUpdates().catch(e => console.error('update check failed', e.message));
+  check();
+  setInterval(check, 6 * 60 * 60 * 1000);
+}
+
 // ---------- hotkeys, tray ----------
 function registerHotkeys() {
   globalShortcut.unregisterAll();
@@ -501,8 +551,10 @@ function registerHotkeys() {
   const failed = [];
   const reg = (accel, fn) => { try { if (!globalShortcut.register(accel, fn)) failed.push(accel); } catch { failed.push(accel); } };
   reg(hotkeys.overlay, toggleOverlay);
+  reg(hotkeys.exclusive, toggleExclusive);
   reg(hotkeys.detail, toggleDetail);
   reg(hotkeys.capture, () => captureScreen().catch(e => console.error('capture failed', e)));
+  if (process.env.D4_DEBUG && failed.length) console.log('hotkeys failed', failed);
   return failed;
 }
 
@@ -539,8 +591,10 @@ function registerIpc() {
   });
   ipcMain.handle('open-debug', () => shell.openPath(path.join(app.getPath('userData'), 'debug')));
   ipcMain.on('toggle-detail', toggleDetail);
+  ipcMain.on('exclusive-off', () => toggleExclusive(false));
 
-  ipcMain.handle('library', async () => ({ builds: await lib.list(), active: state.activeBuild, phase: phase()?.name ?? null, phases: phases().map(p => p.name), settings: settings(), window: state.window }));
+  ipcMain.handle('install-update', () => updateReady && autoUpdater.quitAndInstall());
+  ipcMain.handle('library', async () => ({ version: app.getVersion(), updateReady, builds: await lib.list(), active: state.activeBuild, phase: phase()?.name ?? null, phases: phases().map(p => p.name), settings: settings(), window: state.window }));
   ipcMain.handle('import', async (_e, link) => {
     const imported = await lib.import(String(link ?? '').slice(0, 2000));
     state = await lib.state();
@@ -598,11 +652,13 @@ app.whenReady().then(async () => {
   if (!imageArg) showControl(); // the main window is "the app": closing it quits
   updateVisibility();
   upgradeBuild();
+  setupUpdates();
 
   // dev check without photographing the desktop: write PNGs of our own windows only
   if (process.env.D4_DETAIL) toggleDetail();
+  if (process.env.D4_EXCLUSIVE) setTimeout(() => toggleExclusive(true), 3000); // dev: test the exclusive mode
   if (process.env.D4_SNAPSHOT_DIR) setInterval(async () => {
-    for (const [name, w] of [['overlay', overlay], ['detail', detail], ['control', control], ['toast', toast]]) {
+    for (const [name, w] of [['overlay', overlay], ['detail', detail], ['control', control], ['toast', toast], ['dim', dimWin]]) {
       if (w && !w.isDestroyed() && w.isVisible()) await writeFile(path.join(process.env.D4_SNAPSHOT_DIR, `${name}.png`), (await w.webContents.capturePage()).toPNG());
     }
   }, 1500);

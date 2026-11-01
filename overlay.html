@@ -40,7 +40,7 @@
   .rz.ne, .rz.nw, .rz.se, .rz.sw { width: 12px; height: 12px; }
   .rz.ne { top: 0; right: 0; cursor: nesw-resize; } .rz.sw { bottom: 0; left: 0; cursor: nesw-resize; }
   .rz.nw { top: 0; left: 0; cursor: nwse-resize; } .rz.se { bottom: 0; right: 0; cursor: nwse-resize; }
-  body.detail .rz, body.toast .rz { display: none; }
+  body.detail .rz, body.toast .rz, body.dim .rz { display: none; }
   ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #3d3326; border-radius: 3px; }
   .new { color: var(--gold); }
   .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 8px 0 4px; }
@@ -68,6 +68,9 @@
   .pill.prio { border-color: var(--prio); }
   .drop { color: #e8c58a; font-size: 12px; margin-top: 2px; }
   body.toast { overflow: hidden; }
+  body.dim { background: rgba(0, 0, 0, 0.45); cursor: pointer; }
+  .hints { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .excl { margin-top: 6px; font-size: 12px; color: #14110e; background: var(--gold); border-radius: 4px; padding: 3px 8px; font-weight: 600; }
   .toast-msg { margin: 6px; padding: 12px 16px; border-radius: 8px; background: rgba(14, 12, 10, 0.95); border: 1px solid var(--line);
                border-left: 5px solid var(--gold); color: var(--text); font-size: 15px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
   .toast-msg.ok { border-left-color: var(--ok); }
@@ -106,6 +109,7 @@ import { rotatedCell } from './board.mjs';
 const t = window.tracker;
 const isDetail = location.hash === '#detail';
 const isToast = location.hash === '#toast';
+const isDim = location.hash === '#dim';
 if (isDetail) document.body.classList.add('detail');
 
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -114,7 +118,7 @@ const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; 
 const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 let live = null, phase = null, buildName = null, leveling = null, menuOpen = false;
-let lastContext = null, manualFor = null; // in-game screen; manualFor = the screen during which a tab was clicked
+let lastContext = null, manualFor = null, lastHeadKey = ''; // in-game screen; manualFor = the screen during which a tab was clicked
 let tab = new URLSearchParams(location.search).get('tab') ?? load('tab', 'gear'); // ?tab= is a dev hook for snapshots
 let paragonStep = null, boardIdx = 0;
 
@@ -418,7 +422,7 @@ function render() {
   const app = document.getElementById('app');
   const scroll = document.getElementById('body')?.scrollTop ?? 0;
   app.replaceChildren();
-  if (isToast) return;
+  if (isToast || isDim) return;
   if (isDetail) return renderDetail(app);
 
   const head = el('div', 'panel'); head.id = 'head';
@@ -455,6 +459,9 @@ function render() {
     tabs.append(b);
   }
   head.append(tabs);
+  const hk = live?.hotkeys;
+  if (live?.exclusive) head.append(el('div', 'excl', `Bedienmodus: klik en scroll vrij. Esc of ${hk?.exclusive ?? ''} = terug naar het spel`));
+  else if (hk) head.append(el('div', 'hints', `${hk.exclusive} bedienen · ${hk.overlay} verbergen · ${hk.detail} paragon`));
 
   const body = el('div', 'panel'); body.id = 'body';
   ({ gear: gearTab, skills: skillsTab, paragon: paragonTab })[shown](body);
@@ -496,6 +503,12 @@ function renderDetail(app) {
   app.append(panel);
 }
 
+// exclusive mode: the dim layer over the game; a click or Esc goes back to the game
+if (isDim) {
+  document.body.classList.add('dim');
+  document.addEventListener('mousedown', () => t.exclusiveOff());
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') t.exclusiveOff(); });
+}
 if (isToast) {
   document.body.classList.add('toast');
   t.onToast(({ text, kind }) => { document.getElementById('app').replaceChildren(el('div', `toast-msg ${kind ?? ''}`, text)); });
@@ -505,10 +518,14 @@ t.onUpdate(d => {
   live = d;
   document.documentElement.style.setProperty('--bg', `rgba(14, 12, 10, ${d.opacity ?? 0.94})`);
   // re-render the live Gear tab; other views only when needed, so lists keep their scroll position
+  // header content (hotkey hints, exclusive banner) must follow changes on every tab
+  const headKey = JSON.stringify([d.exclusive, d.hotkeys]);
+  const headChanged = headKey !== lastHeadKey;
+  lastHeadKey = headKey;
   const contextChanged = (d.context ?? null) !== lastContext;
   lastContext = d.context ?? null;
   if (!lastContext) manualFor = null;
-  if (isDetail ? !document.querySelector('.close-hint') : contextChanged || (lastContext ?? tab) === 'gear' || !document.getElementById('body')) render();
+  if (isDetail ? !document.querySelector('.close-hint') : contextChanged || headChanged || (lastContext ?? tab) === 'gear' || !document.getElementById('body')) render();
 });
 render();
 </script>

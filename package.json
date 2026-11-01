@@ -1,7 +1,7 @@
 {
   "name": "d4-tracker",
   "productName": "D4 Build Tracker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Diablo IV build tracker overlay",
   "author": "karim",
   "private": true,
@@ -55,7 +55,18 @@
       "allowToChangeInstallationDirectory": true,
       "createStartMenuShortcut": true,
       "createDesktopShortcut": true,
-      "shortcutName": "D4 Build Tracker"
-    }
+      "shortcutName": "D4 Build Tracker",
+      "artifactName": "D4-Build-Tracker-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ZoraFreewalker",
+        "repo": "d4-build-tracker"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "6.3.9"
   }
 }

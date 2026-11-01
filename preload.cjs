@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('tracker', {
   dragEnd: () => ipcRenderer.send('drag-end'),
   openControl: () => ipcRenderer.send('open-control'),
   toggleDetail: () => ipcRenderer.send('toggle-detail'),
+  exclusiveOff: () => ipcRenderer.send('exclusive-off'),
   // control window
   library: () => ipcRenderer.invoke('library'),
   importBuild: link => ipcRenderer.invoke('import', String(link)),
@@ -24,4 +25,6 @@ contextBridge.exposeInMainWorld('tracker', {
   settings: change => ipcRenderer.invoke('settings', change),
   resetProgress: () => ipcRenderer.invoke('reset-progress'),
   openDebug: () => ipcRenderer.invoke('open-debug'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateReady: cb => ipcRenderer.on('update-ready', (_e, v) => cb(v)),
 });
