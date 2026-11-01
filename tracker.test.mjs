@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries } from './tracker.mjs';
+import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries, rangeMax } from './tracker.mjs';
 
 
 test('weapon tooltips: "(Bludgeoning)" type, DPS delta, lost properties (real OCR)', () => {
@@ -31,6 +31,21 @@ test('weapon tooltips: "(Bludgeoning)" type, DPS delta, lost properties (real OC
   assert.ok(!/Weapon Damage/.test(sword.body), 'lost properties are not part of the item');
 });
 
+test('have / need per stat, with the item level max counting as full', () => {
+  const phase = { slots: { Helm: { unique: false, aspects: [], tempered: [], affixes: [{ text: '30 Strength', priority: 1 }, { text: '+115 Maximum Life', priority: 2 }] } } };
+  const helm = lines => ({ slotType: 'Helm', name: 'x', body: '', affixLines: lines });
+  // 14 of 30 Strength, while this item could roll up to 15: not full
+  let r = compare(helm([{ text: '+14 Strength', max: 15 }, { text: '+115 Maximum Life', max: 115 }]), phase);
+  assert.deepEqual(r.affixes.map(a => [a.status, a.have, a.need, a.max]), [['partial', 14, 30, 15], ['full', 115, 115, 115]]);
+  assert.equal(r.score, Math.round(((14 / 30) + 1) / 2 * 100));
+  // at the highest roll for its item level: counts as full although below the guide value
+  r = compare(helm([{ text: '+15 Strength', max: 15 }]), phase);
+  assert.equal(r.affixes[0].status, 'full');
+  assert.equal(rangeMax('+14 Strength [10 - 15]'), 15);
+  assert.equal(rangeMax('+16 Maximum Life [13 - 161'), 16); // OCR read "]" as 1
+  assert.equal(rangeMax('+175.0% Damage to Injured Enemies [175.0]%'), 175);
+});
+
 test('item power, game deltas and affix values are read from tooltip text', () => {
   assert.equal(itemPower('760+25 Item Power'), 785);
   assert.equal(itemPower('500 Item Power'), 500);
@@ -55,17 +70,19 @@ test('one tooltip line counts for one build affix (screenshot: Death Garb vs Vig
     body: '140 Item Power +2 Strength +[1 - 7] (+2) +2 Maximum Resource [1 - 5] (+2) 1.3% Resource Cost Reduction [1.0 - 2.0]% (+1.3%)' };
   const d = compare(doublet, phase);
   assert.deepEqual(d.affixes.filter(a => a.ok).map(a => a.text), ['+115 Maximum Life']); // not also the temper
-  assert.equal(d.score, 20);
-  assert.equal(compare(garb, phase).score, 20);
+  // present but far below the guide: +1 of 115 Maximum Life, +2 of 30 Strength
+  assert.deepEqual(d.affixes.filter(a => a.ok).map(a => [a.status, a.have, a.need]), [['partial', 1, 115]]);
+  assert.equal(d.score, 0);
+  assert.equal(compare(garb, phase).score, 1);
   assert.equal(verdict(garb, doublet, phase).kind, 'upgrade');
   // two real "Maximum Life" lines do satisfy affix and temper
-  assert.equal(compare({ ...doublet, body: '+115 Maximum Life +1500 Maximum Life' }, phase).score, 40);
+  assert.equal(compare({ ...doublet, affixLines: [{ text: '+115 Maximum Life' }, { text: '+1,500 Maximum Life' }] }, phase).score, 40);
 });
 
 test('affix rows: game deltas, wrapped lines, build marks and lost properties in the verdict', () => {
   assert.deepEqual(affixEntries(['368 Armor (+3.2% Toughness)', 'o +2 Strength +[1 - 7] (+2)', 'o +2 Maximum Resource [1 - 5] (+2)',
     'o 1.3% Resource Cost Reduction [1.0 -', '2.0]% (+1.3%)']), [
-    { text: '+2 Strength', delta: '+2' }, { text: '+2 Maximum Resource', delta: '+2' }, { text: '1.3% Resource Cost Reduction', delta: '+1.3%' }]);
+    { text: '+2 Strength', delta: '+2', max: 7 }, { text: '+2 Maximum Resource', delta: '+2', max: 5 }, { text: '1.3% Resource Cost Reduction', delta: '+1.3%', max: 2 }]);
   const phase = { slots: { ChestArmor: { unique: false, aspects: [], affixes: [{ text: '30 Strength' }, { text: '+115 Maximum Life' }], tempered: [] } } };
   const garb = { slotType: 'ChestArmor', name: 'DEATH GARB', power: 140, deltas: { toughness: 3.2 }, body: '+2 Strength +2 Maximum Resource',
     affixLines: [{ text: '+2 Strength', delta: '+2' }, { text: '+2 Maximum Resource', delta: '+2' }],

@@ -58,6 +58,8 @@
   .pill.loss, .pill.loss.build { background: #2c1b1b; border-color: #b04a4a; color: #f0c0c0; }
   .pill.build { border-color: var(--gold); font-weight: 600; }
   .pill.same { background: #1c1814; color: #cfc6b4; }
+  .pill.half { background: #2e2615; border-color: #8a6a2a; color: #f0c674; }
+  .now.on { color: var(--ok); } .now.half { color: var(--warn); } .now.off { color: var(--no); }
   .vlabel { margin-top: 6px; }
   .prio.p1 { --prio: #ff8000; } .prio.p2 { --prio: #ffd23f; } .prio.p3 { --prio: #6f8dff; } .prio.p4 { --prio: #b8b8b8; } .prio.pt { --prio: #c37cf2; }
   .badge { display: inline-block; min-width: 15px; height: 15px; line-height: 15px; border-radius: 8px; margin-right: 5px; text-align: center;
@@ -249,9 +251,35 @@ function slotGrid(slots) {
 }
 
 // ---------- tabs ----------
+// "14 / 30 Strength (max 15)": what the item has against what the guide asks, and the highest roll
+// this item level allows (when the game shows it)
+const STATUS = { full: ['✓', 'on'], partial: ['◐', 'half'], missing: ['·', 'off'] };
+const statName = text => text.replace(/^[+x]?[\d.,]+%?\s+/i, '');
+const isPct = text => /^[+x]?[\d.,]+%/.test(text);
+function statLabel(a) {
+  const [mark] = STATUS[a.status] ?? STATUS.missing;
+  if (a.need == null) return `${mark} ${a.text}`;
+  const pct = isPct(a.text) ? '%' : '';
+  const have = a.have == null ? (a.ok ? '?' : '—') : `${a.have}${pct}`;
+  const max = a.status === 'partial' && a.max != null && a.max < a.need ? ` (max op dit item: ${a.max}${pct})` : '';
+  return `${mark} ${have} / ${a.need}${pct} ${statName(a.text)}${max}`;
+}
+
 function gearTab(body) {
   const p = live?.progress;
   if (live?.notice) body.append(el('div', 'ok', live.notice));
+  const hovering = live?.ocr && live?.gameRunning && live.results.length > 0;
+  // focus mode: while an item is hovered its verdict and stats come first and the rest folds into one line,
+  // so a small overlay still shows what matters right now
+  if (hovering) {
+    if (p) {
+      const line = el('div', 'muted', `Build ${p.percent}%${p.next && p.next.score < 100 ? ` · volgende: ${p.next.slot}` : ''}`);
+      body.append(line);
+    }
+    for (const r of live.results.filter(r => r.verdict)) body.append(verdictBox(r));
+    for (const r of live.results) body.append(itemBox(r));
+    return;
+  }
   if (p) {
     const r = el('div', 'row'); r.append(el('span', null, 'Build voltooid'), el('b', scoreCls(p.percent), `${p.percent}%`));
     const bar = el('div', 'bar'); const fill = el('div'); fill.style.width = `${p.percent}%`; bar.append(fill);
@@ -265,41 +293,55 @@ function gearTab(body) {
   }
   if (!live?.ocr) body.append(el('div', 'muted', 'Item-herkenning staat uit (instellingen).'));
   else if (!live?.gameRunning) body.append(el('div', 'muted', 'Diablo IV niet gevonden. Zet het spel op borderless.'));
-  else if (!live.results.length) body.append(el('div', 'muted', 'Hover over een item. Open je character-scherm om equipped items te tellen.'));
-  else {
-    for (const r of live.results.filter(r => r.verdict)) body.append(verdictBox(r));
-    for (const r of live.results) {
-      const box = el('div', 'item');
-      const title = el('div', 'row');
-      title.append(el('b', null, `${r.equipped ? '[EQUIPPED] ' : ''}${r.name || '?'}`));
-      if (r.match) title.append(el('b', scoreCls(r.match.score), `${r.match.score}%`));
-      box.append(title, el('div', 'muted', r.type));
-      if (!r.match) { box.append(el('div', 'no', 'Niet in deze fase van je build.')); body.append(box); continue; }
-      box.append(el('div', 'muted', `Build ${r.match.slot}: ${r.match.want}`));
-      const pills = el('div', 'pills');
-      if (r.match.item !== null) pills.append(el('span', `pill ${r.match.item ? 'on' : 'off bad'}`, `${r.match.item ? '✓' : '✗'} juiste unique/aspect`));
-      for (const a of r.match.affixes) { const pill = el('span', `pill ${a.ok ? 'on' : 'off'} ${prioCls(a)}`, `${a.ok ? '✓ ' : ''}${a.text}`); pill.prepend(prioBadge(a)); pills.append(pill); }
-      box.append(pills);
-      body.append(box);
-    }
-  }
-  // what every slot needs, so the build guide never has to be opened
+  else body.append(el('div', 'muted', 'Hover over een item. Open je character-scherm om equipped items te tellen.'));
+  // what every slot needs, so the build guide never has to be opened; "nu" = the remembered equipped item
   if (phase?.slots && Object.keys(phase.slots).length) {
     body.append(el('h2', null, 'Wat je nodig hebt'), prioLegend());
     const scores = Object.fromEntries((p?.slots ?? []).map(s => [s.slot, s.score]));
     for (const [slot, s] of Object.entries(phase.slots)) {
+      const now = live?.current?.[slot];
       const box = el('div', 'item');
       const r = el('div', 'row'); r.append(el('b', null, slot), el('b', scoreCls(scores[slot] ?? 0), `${scores[slot] ?? 0}%`));
       box.append(r, el('div', 'muted', s.unique ? `Unique: ${s.name}` : s.aspects.map(a => a.text).join(' / ') || s.name || ''));
+      if (now) box.append(el('div', 'muted', `nu: ${now.name}`));
       if (s.drops) box.append(el('div', 'drop', `📍 Drop: ${s.drops.join(' / ')}`));
       const ul = el('ul');
-      for (const a of s.affixes) { const li = el('li', prioCls(a), `${a.text}${a.greater ? ' (GA)' : ''}`); li.prepend(prioBadge(a)); ul.append(li); }
-      for (const a of s.tempered) { const li = el('li', 'prio pt', a.text); li.prepend(prioBadge({ tempered: true })); ul.append(li); }
+      const nowOf = text => now?.affixes.find(a => a.text === text);
+      for (const a of [...s.affixes, ...s.tempered.map(t => ({ ...t, tempered: true }))]) {
+        const cur = nowOf(a.text);
+        const li = el('li', a.tempered ? 'prio pt' : prioCls(a), `${a.text}${a.greater ? ' (GA)' : ''}`);
+        li.prepend(prioBadge(a));
+        if (cur) {
+          const pct = isPct(a.text) ? '%' : '';
+          const [mark, cls] = STATUS[cur.status] ?? STATUS.missing;
+          li.append(el('span', `now ${cls}`, cur.status === 'missing' ? ' · ontbreekt' : ` · nu ${cur.have ?? '?'}${pct} ${mark}`));
+        }
+        ul.append(li);
+      }
       if (s.sockets.length) ul.append(el('li', 'muted', `◇ sockets: ${s.sockets.join(', ').replace(/_/g, ' ')}`));
       box.append(ul);
       body.append(box);
     }
   }
+}
+
+function itemBox(r) {
+  const box = el('div', 'item');
+  const title = el('div', 'row');
+  title.append(el('b', null, `${r.equipped ? '[EQUIPPED] ' : ''}${r.name || '?'}`));
+  if (r.match) title.append(el('b', scoreCls(r.match.score), `${r.match.score}%`));
+  box.append(title, el('div', 'muted', r.type));
+  if (!r.match) { box.append(el('div', 'no', 'Niet in deze fase van je build.')); return box; }
+  box.append(el('div', 'muted', `Build ${r.match.slot}: ${r.match.want}`));
+  const pills = el('div', 'pills');
+  if (r.match.item !== null) pills.append(el('span', `pill ${r.match.item ? 'on' : 'off bad'}`, `${r.match.item ? '✓' : '✗'} juiste unique/aspect`));
+  for (const a of r.match.affixes) {
+    const pill = el('span', `pill ${(STATUS[a.status] ?? STATUS.missing)[1]} ${prioCls(a)}`, statLabel(a));
+    pill.prepend(prioBadge(a));
+    pills.append(pill);
+  }
+  box.append(pills);
+  return box;
 }
 
 function skillsTab(body) {

@@ -90,6 +90,7 @@ export function affixEntries(rows) {
     const delta = /\(\s*([+\-−–]\s*\d[\d,.]*%?)\s*\)\s*$/.exec(raw)?.[1].replace(/\s/g, '').replace(/[−–]/, '-') ?? null;
     // a short "(…)" that isn't a readable difference: the red/green value was there but OCR mangled it ("(A)")
     const unreadable = !delta && /\(\s*[^()]{1,4}\s*\)\s*$/.test(raw);
+    const max = rangeMax(raw);
     const text = raw.replace(/\(\s*[+\-−–]\s*\d[\d,.]*%?\s*\)\s*$/, '').replace(/\(\s*[^()]{1,4}\s*\)\s*$/, '')
       .replace(/\+?\s*\[[^\]]*\]?\s*%?/g, ' ')
       // value ranges whose brackets OCR read as "1" or dropped: "+[1 - 7]" -> "+11 - 71" / "- 71"
@@ -97,8 +98,26 @@ export function affixEntries(rows) {
       // a single-value range "+[1]" read as "+111" after the stat name
       .replace(/(?<=[a-z])\s+\+\d[\d.,]*%?(?=\s|$)/gi, ' ')
       .replace(/\s+/g, ' ').trim();
-    return unreadable ? { text, delta, unreadable } : { text, delta };
+    return { text, delta, ...(max != null && { max }), ...(unreadable && { unreadable }) };
   }).filter(e => e.text.length > 2);
+}
+
+export const leadingValue = text => {
+  const m = /^[+x]?(\d[\d.,]*)/i.exec(String(text).trim());
+  return m ? num(m[1]) : null;
+};
+
+// highest roll this item can have for the stat, from the game's range: "+14 Strength [10 - 15]" -> 15.
+// OCR often reads the closing "]" as a 1 ("[13 - 161"): then the extra digit is dropped.
+export function rangeMax(raw) {
+  const value = leadingValue(raw);
+  const single = /\[\s*(\d[\d.,]*)\s*\]/.exec(raw);
+  if (single) return num(single[1]);
+  const m = /\[\s*(\d[\d.,]*)\s*[-–]\s*(\d[\d.,]*)\s*(\])?/.exec(raw);
+  if (!m) return null;
+  let max = num(m[2]);
+  if (!m[3] && /1$/.test(m[2]) && value != null && max > value * 2) max = num(m[2].slice(0, -1));
+  return Number.isFinite(max) && (value == null || max >= value) ? max : null;
 }
 
 // tooltip text from these lines on is not about the item's stats (footer, flavor text)
@@ -230,19 +249,36 @@ export function compare(tooltip, phase) {
       : s.aspects.length ? s.aspects.some(a => hasText(tooltip.body, a.text)) : null;
     // one tooltip line satisfies one build affix: "+1 Maximum Life" can't count as both the affix and the
     // "+1500 Maximum Life" temper. Regular affixes go first, a temper needs a line of its own.
-    const used = {};
+    const used = {}, usedLines = new Set();
+    const lines = tooltip.affixLines ?? [];
     const take = text => {
+      // with parsed stat rows: the first unused row that names the stat (gives its value and range)
+      if (lines.length) {
+        const i = lines.findIndex((l, j) => !usedLines.has(j) && countText(l.text, text) > 0);
+        if (i < 0) return null;
+        usedLines.add(i);
+        return { have: leadingValue(lines[i].text), max: lines[i].max ?? null };
+      }
       const key = words(text).join(' ');
-      if (countText(tooltip.body, text) <= (used[key] ?? 0)) return false;
+      if (countText(tooltip.body, text) <= (used[key] ?? 0)) return null;
       used[key] = (used[key] ?? 0) + 1;
-      return true;
+      return { have: affixValue(tooltip.body, text), max: null };
     };
-    const affixes = [...s.affixes, ...s.tempered.map(a => ({ ...a, tempered: true }))]
-      .map(a => ({ text: a.text, tempered: !!a.tempered, priority: a.priority ?? null, ok: take(a.text) }));
-    // Maxroll lists more affixes than fit on a non-unique item (max 4), so cap both counts at 4
+    const affixes = [...s.affixes, ...s.tempered.map(a => ({ ...a, tempered: true }))].map(a => {
+      const found = take(a.text);
+      const need = leadingValue(a.text);
+      const out = { text: a.text, tempered: !!a.tempered, priority: a.priority ?? null, ok: !!found, need, have: found?.have ?? null, max: found?.max ?? null };
+      // full: at the guide's value, or at the highest roll this item level allows (not the player's fault)
+      const full = found && (out.have == null || need == null || out.have >= need || (out.max != null && out.have >= out.max));
+      out.status = !found ? 'missing' : full ? 'full' : 'partial';
+      out.credit = !found ? 0 : full ? 1 : Math.max(0, Math.min(1, out.have / need));
+      return out;
+    });
+    // Maxroll lists more affixes than fit on a non-unique item (max 4): count the best 4
     const cap = n => Math.min(n, MAX_AFFIXES);
     const regular = affixes.filter(a => !a.tempered), tempered = affixes.filter(a => a.tempered);
-    const got = cap(regular.filter(a => a.ok).length) + tempered.filter(a => a.ok).length + (item ? 1 : 0);
+    const best = regular.map(a => a.credit).sort((x, y) => y - x).slice(0, MAX_AFFIXES);
+    const got = best.reduce((n, c) => n + c, 0) + tempered.reduce((n, a) => n + a.credit, 0) + (item ? 1 : 0);
     const total = cap(regular.length) + tempered.length + (item === null ? 0 : 1);
     // a unique's affixes are fixed and Maxroll sometimes lists ones the game version lacks, so the name decides
     const score = s.unique ? (item ? 100 : 0) : total ? Math.round((got / total) * 100) : 0;
@@ -348,15 +384,9 @@ export function verdict(hovered, equipped, phase) {
     // no compare tooltip: fall back on build fit and own value comparison against the remembered item
     const e = equipped ? compare(equipped, phase) : null;
     if (h && e) {
-      add(Math.sign(h.score - e.score) * 1.5, `build ${h.score}% (nu ${e.score}%)`);
-      let up = 0, down = 0;
-      for (const a of h.affixes.filter(a => a.ok && !a.tempered)) {
-        if (!e.affixes.find(b => b.text === a.text)?.ok) continue;
-        const hv = affixValue(hovered.body, a.text), ev = affixValue(equipped.body, a.text);
-        if (hv == null || ev == null || hv === ev) continue;
-        hv > ev ? up++ : down++;
-      }
-      add(Math.sign(up - down) * 0.5, `${up} hogere / ${down} lagere waarden`);
+      // the build score already weighs how much of each stat an item has, so it covers higher/lower values;
+      // a 50-point difference counts fully
+      add(Math.max(-1, Math.min(1, (h.score - e.score) / 50)) * 2, `build ${h.score}% (nu ${e.score}%)`);
     }
   }
   if (equipped && hovered.power && equipped.power) {

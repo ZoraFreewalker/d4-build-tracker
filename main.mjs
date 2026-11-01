@@ -234,6 +234,22 @@ async function detectContext() {
   if (next !== context) { context = next; send(); }
 }
 
+// what the remembered equipped items have per build slot (stat values for "nodig 30 · nu 14")
+function currentGear(ph) {
+  const out = {};
+  for (const item of Object.values(buildState().equipped ?? {}).flat()) {
+    const r = compare(item, ph);
+    if (!r) continue;
+    // a second ring / one-handed weapon fills the next slot of that kind ("Ring 2", "Sword 2")
+    let slot = r.slot.split(', ')[0];
+    const base = slot.replace(/ \d+$/, '');
+    for (let n = 2; out[slot] && ph.slots[`${base} ${n}`]; n++) slot = `${base} ${n}`;
+    if (out[slot]) continue;
+    out[slot] = { name: item.name, affixes: r.affixes.map(a => ({ text: a.text, status: a.status, have: a.have, max: a.max })) };
+  }
+  return out;
+}
+
 // ---------- overlay data ----------
 let lastSent = '';
 function send(extra = {}) {
@@ -241,7 +257,7 @@ function send(extra = {}) {
   const data = JSON.stringify({
     build: build?.name ?? null, phase: ph?.name ?? null, phases: phases().map(p => p.name),
     gameRunning: gameRunning || !!imageArg, ocr: settings().ocr, hotkeys: settings().hotkeys, opacity: settings().opacity,
-    progress: ph ? progress(ph, buildState().seen[ph.name]) : null, context, results: [], ...extra,
+    progress: ph ? progress(ph, buildState().seen[ph.name]) : null, current: ph ? currentGear(ph) : {}, context, results: [], ...extra,
   });
   if (data === lastSent) return;
   lastSent = data;
@@ -360,7 +376,7 @@ function rememberEquipped(t) {
   const store = (buildState().equipped ??= {});
   const list = (store[t.slotType] ?? []).filter(e => e.name !== t.name);
   const keep = t.slotType === 'Ring' || sameSlot(t.slotType, 'Sword') ? 2 : 1;
-  const item = { name: t.name, slotType: t.slotType, rarity: t.rarity, power: t.power, body: t.body, seenAt: Date.now() };
+  const item = { name: t.name, slotType: t.slotType, rarity: t.rarity, power: t.power, body: t.body, affixLines: t.affixLines, seenAt: Date.now() };
   const prev = store[t.slotType]?.find(e => e.name === t.name);
   store[t.slotType] = [item, ...list].slice(0, keep);
   if (!prev || prev.body !== t.body || prev.power !== t.power) save();
