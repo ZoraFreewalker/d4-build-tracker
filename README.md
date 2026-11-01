@@ -10,7 +10,7 @@ Start `dist/D4 Build Tracker Setup 1.0.0.exe`. Windows SmartScreen waarschuwt om
 - Eerste start: het beheervenster opent → plak een link (`https://maxroll.gg/d4/build-guides/…`, planner-link of ID).
 - Overlay-tabbladen: **Gear** (live item-vergelijking + wat elk slot nodig heeft), **Skills** (skill bar, nodes met
   rank, leveling-stappen met ★ voor nieuw), **Paragon** (per board, met glyph en rotatie).
-- ⠿ slepen = verplaatsen, ⤡ slepen = schalen, ⚙ = beheervenster. Tray-icoon voor dezelfde opties en Afsluiten.
+- ⠿ slepen = verplaatsen; randen en hoeken slepen = vergroten/verkleinen zoals een Windows-venster (breedte schaalt de tekst, hoogte toont meer van de lijst); ⚙ = beheervenster. Tray-icoon voor dezelfde opties en Afsluiten.
 - Sneltoetsen (aan te passen): `Alt+Shift+O` overlay aan/uit, `Alt+Shift+B` alle paragon boards groot.
 - Equipped items tellen mee zodra je ze in je character-scherm hovert.
 

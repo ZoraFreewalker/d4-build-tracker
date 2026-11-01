@@ -25,6 +25,7 @@ const CROP_WIDTH = 2000; // px of the frame kept around the cursor
 const FRAME = path.join(tmpdir(), 'd4-tracker-frame');
 const BASE = { width: 380, height: 620 }; // overlay size at scale 1
 const SCALE_MIN = 0.5, SCALE_MAX = 2.5;
+const MIN_HEIGHT = 160; // DIP, enough for the header
 const DEFAULT_SETTINGS = { ocr: true, notify: true, opacity: 0.94, overlayOpacity: 1, hotkeys: { overlay: 'Alt+Shift+O', detail: 'Alt+Shift+B', capture: 'Alt+Shift+S' } };
 const imageArg = process.argv.includes('--image') ? path.resolve(process.argv[process.argv.indexOf('--image') + 1]) : null;
 
@@ -371,27 +372,43 @@ function weakestEquipped(t, ph) {
 
 // ---------- overlay window: scale, drag, click-through ----------
 // x/y passed in during a drag: re-reading getPosition each step drifts under Windows display scaling
-function applyScale(scale, [x, y] = overlay.getPosition()) {
-  state.window.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale));
-  overlay.setBounds({ x, y, width: Math.round(BASE.width * state.window.scale), height: Math.round(BASE.height * state.window.scale) });
+// width follows the scale (text size); the height is free (more or less of the lists), like a normal window
+const clampScale = s => Math.min(SCALE_MAX, Math.max(SCALE_MIN, s));
+const winHeight = () => state.window.height ?? Math.round(BASE.height * state.window.scale);
+function applyScale(scale, [x, y] = overlay.getPosition(), height = winHeight()) {
+  state.window.scale = clampScale(scale);
+  const maxH = screen.getPrimaryDisplay().workArea.height;
+  state.window.height = Math.round(Math.min(maxH, Math.max(MIN_HEIGHT, height)));
+  overlay.setBounds({ x, y, width: Math.round(BASE.width * state.window.scale), height: state.window.height });
   overlay.webContents.setZoomFactor(state.window.scale);
 }
 
 // move/scale by polling the cursor: the window follows it, so the mouseup still lands on the overlay
 let dragTimer = null;
+// mode: 'move', 'scale' (the ⤡ grip, proportional) or 'resize-<n|s|e|w|ne|nw|se|sw>' (window edges/corners)
 function startDrag(mode) {
   if (state.window.locked) return;
   clearInterval(dragTimer);
   const start = screen.getCursorScreenPoint();
   const [x, y] = overlay.getPosition();
-  const scale = state.window.scale;
+  const scale = state.window.scale, w0 = Math.round(BASE.width * scale), h0 = winHeight();
+  const edges = mode.startsWith('resize-') ? mode.slice(7) : '';
   dragTimer = setInterval(() => {
-    const p = screen.getCursorScreenPoint();
+    const p = screen.getCursorScreenPoint(), dx = p.x - start.x, dy = p.y - start.y;
     // setBounds with a fixed size: setPosition alone makes the window grow under Windows display scaling
-    if (mode === 'move') return overlay.setBounds({ x: x + p.x - start.x, y: y + p.y - start.y, width: Math.round(BASE.width * scale), height: Math.round(BASE.height * scale) });
-    const b = overlay.getBounds();
-    if (p.y < b.y - 40 || p.y > b.y + b.height + 40) return endDrag(); // cursor left the overlay, mouseup would be lost
-    applyScale(scale + (p.x - start.x) / BASE.width, [x, y]);
+    if (mode === 'move') return overlay.setBounds({ x: x + dx, y: y + dy, width: w0, height: h0 });
+    if (mode === 'scale') {
+      const b = overlay.getBounds();
+      if (p.y < b.y - 40 || p.y > b.y + b.height + 40) return endDrag(); // cursor left the overlay, mouseup would be lost
+      const next = clampScale(scale + dx / BASE.width);
+      return applyScale(next, [x, y], h0 * (next / scale));
+    }
+    // edges: the opposite side stays where it is, as with a Windows window
+    const next = clampScale((edges.includes('e') ? w0 + dx : edges.includes('w') ? w0 - dx : w0) / BASE.width);
+    const w = Math.round(BASE.width * next);
+    const maxH = screen.getPrimaryDisplay().workArea.height;
+    const h = Math.round(Math.min(maxH, Math.max(MIN_HEIGHT, edges.includes('s') ? h0 + dy : edges.includes('n') ? h0 - dy : h0)));
+    applyScale(next, [edges.includes('w') ? x + w0 - w : x, edges.includes('n') ? y + h0 - h : y], h);
   }, 16);
 }
 function endDrag() {
@@ -488,7 +505,7 @@ function createTray() {
 
 // ---------- IPC ----------
 function registerIpc() {
-  ipcMain.on('drag-start', (_e, mode) => startDrag(mode === 'scale' ? 'scale' : 'move'));
+  ipcMain.on('drag-start', (_e, mode) => startDrag(/^(scale|resize-(n|s|e|w|ne|nw|se|sw))$/.test(mode) ? mode : 'move'));
   ipcMain.on('drag-end', endDrag);
   ipcMain.on('phase', (_e, name) => {
     if (!phases().some(p => p.name === name)) return;
@@ -549,8 +566,7 @@ function registerIpc() {
 function createOverlayPosition() {
   const { workArea } = screen.getPrimaryDisplay();
   state.window = { x: workArea.x + 20, y: workArea.y + Math.round(workArea.height * 0.15), scale: 1, locked: false };
-  overlay.setBounds({ x: state.window.x, y: state.window.y, width: BASE.width, height: BASE.height });
-  applyScale(1);
+  applyScale(1, [state.window.x, state.window.y], BASE.height);
 }
 
 app.whenReady().then(async () => {

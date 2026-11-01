@@ -29,7 +29,18 @@
   ul { margin: 4px 0 0; padding-left: 4px; list-style: none; }
   li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 10px 0 2px; }
-  #body { max-height: calc(100vh - 150px); overflow-y: auto; }
+  /* the panels fill the window, so its edges are the panels' edges and can be dragged like a window */
+  body:not(.detail):not(.toast) #app { display: flex; flex-direction: column; height: 100vh; }
+  #head { flex: none; }
+  #body { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 0; }
+  .rz { position: fixed; z-index: 10; }
+  .rz.n, .rz.s { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+  .rz.e, .rz.w { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+  .rz.n { top: 0; } .rz.s { bottom: 0; } .rz.e { right: 0; } .rz.w { left: 0; }
+  .rz.ne, .rz.nw, .rz.se, .rz.sw { width: 12px; height: 12px; }
+  .rz.ne { top: 0; right: 0; cursor: nesw-resize; } .rz.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+  .rz.nw { top: 0; left: 0; cursor: nwse-resize; } .rz.se { bottom: 0; right: 0; cursor: nwse-resize; }
+  body.detail .rz, body.toast .rz { display: none; }
   ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #3d3326; border-radius: 3px; }
   .new { color: var(--gold); }
   .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 8px 0 4px; }
@@ -78,6 +89,15 @@
 </head>
 <body>
 <div id="app"></div>
+<!-- window edges and corners: drag to resize (like a Windows window) -->
+<div class="rz n grip" data-drag="resize-n"></div>
+<div class="rz s grip" data-drag="resize-s"></div>
+<div class="rz e grip" data-drag="resize-e"></div>
+<div class="rz w grip" data-drag="resize-w"></div>
+<div class="rz ne grip" data-drag="resize-ne"></div>
+<div class="rz nw grip" data-drag="resize-nw"></div>
+<div class="rz se grip" data-drag="resize-se"></div>
+<div class="rz sw grip" data-drag="resize-sw"></div>
 <script type="module">
 import { rotatedCell } from './board.mjs';
 
@@ -403,7 +423,8 @@ function render() {
 
 // the window is click-through except over the two panels (they hold buttons and scrollable lists)
 function reportRects() {
-  t.rects(['head', 'body'].map(id => document.getElementById(id)).filter(Boolean).map(e => { const { x, y, width, height } = e.getBoundingClientRect(); return { x, y, width, height }; }));
+  const parts = [document.getElementById('head'), document.getElementById('body'), ...document.querySelectorAll('.rz')].filter(Boolean);
+  t.rects(parts.map(e => { const { x, y, width, height } = e.getBoundingClientRect(); return { x, y, width, height }; }).filter(r => r.width && r.height));
 }
 new ResizeObserver(() => !isDetail && reportRects()).observe(document.getElementById('app'));
 document.addEventListener('mousedown', e => { const g = e.target.closest('.grip'); if (g) { e.preventDefault(); t.dragStart(g.dataset.drag); } });
