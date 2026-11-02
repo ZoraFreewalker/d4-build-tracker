@@ -78,7 +78,7 @@
   .verdict[data-kind="upgrade"] { border-left-color: var(--ok); } .verdict[data-kind="downgrade"] { border-left-color: var(--bad); }
   .verdict[data-kind="sidegrade"] { border-left-color: var(--warn); }
   .verdict b { font-size: 14px; }
-  ol.order { margin: 4px 0; padding-left: 20px; } ol.order > li { margin-bottom: 6px; } ol.order > li > b { color: var(--gold); }
+  ol.order { margin: 4px 0; padding-left: 20px; } ol.order > li { margin-bottom: 6px; } ol.order > li > b { color: var(--gold); } ol.order > li.cur { outline: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; background: #2e271e; }
   ol.order ul { margin: 0; padding-left: 4px; color: var(--text); }
   .rank { color: var(--muted); float: right; margin-left: 6px; }
   svg.board { display: block; width: 100%; height: auto; margin: 6px 0; }
@@ -381,11 +381,11 @@ function levelingOrder(body) {
   body.append(el('h2', null, `Levelvolgorde (${leveling.from})`));
   const ol = el('ol', 'order');
   let prev = new Map();
-  leveling.steps.forEach(step => {
+  leveling.steps.forEach((step, i) => {
     const added = step.nodes.filter(n => (prev.get(n.id) ?? 0) < n.rank);
     const points = step.nodes.reduce((s, n) => s + n.rank, 0);
-    const li = el('li');
-    li.append(el('b', null, step.name), el('span', 'rank', `${points} pnt`));
+    const li = el('li', i === live?.levelStep ? 'cur' : null);
+    li.append(el('b', null, step.name), el('span', 'rank', `${points} pnt${i === live?.levelStep ? ` · jij: ~${live.level - 1}` : ''}`));
     const ul = el('ul');
     for (const n of added) {
       const from = prev.get(n.id) ?? 0;
@@ -437,7 +437,7 @@ function render() {
     app.append(head);
     return reportRects();
   }
-  const dd = el('button', 'dd', `Fase: ${phase?.name ?? '-'} ▾`);
+  const dd = el('button', 'dd', `${live?.level ? `Level ${live.level} · ` : ''}Fase: ${phase?.name ?? '-'} ▾`);
   dd.onclick = () => { menuOpen = !menuOpen; render(); };
   head.append(dd);
   if (menuOpen) {
@@ -519,7 +519,7 @@ t.onUpdate(d => {
   document.documentElement.style.setProperty('--bg', `rgba(14, 12, 10, ${d.opacity ?? 0.94})`);
   // re-render the live Gear tab; other views only when needed, so lists keep their scroll position
   // header content (hotkey hints, exclusive banner) must follow changes on every tab
-  const headKey = JSON.stringify([d.exclusive, d.hotkeys]);
+  const headKey = JSON.stringify([d.exclusive, d.hotkeys, d.level]);
   const headChanged = headKey !== lastHeadKey;
   lastHeadKey = headKey;
   const contextChanged = (d.context ?? null) !== lastContext;

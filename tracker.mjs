@@ -332,6 +332,37 @@ export function screenContext(lines) {
   return has(/available points|skill assignment|respec mode/i) ? 'skills' : 'paragon';
 }
 
+// Character level from the character screen ("Level" ... "23" on one row) or the level-up message
+// ("Congratulations, you have reached Level 24!", OCR often garbles the first words).
+export function readLevel(lines) {
+  const valid = n => (n >= 1 && n <= 100 ? n : null);
+  for (const l of lines) {
+    const m = l.text.match(/(?:reached|you have).{0,12}\blevel (\d{1,3})\s*!/i);
+    if (m && valid(+m[1])) return { level: +m[1], source: 'levelup' };
+  }
+  for (const label of lines.filter(l => /^level$/i.test(l.text.trim()))) {
+    const value = lines.find(v => /^\d{1,3}$/.test(v.text.trim()) && v.x > label.x && v.x - label.x < 20 * label.h && Math.abs(v.y - label.y) < label.h / 2);
+    if (value && valid(+value.text)) return { level: +value.text, source: 'sheet' };
+  }
+  return null;
+}
+
+// The milestone of a leveling order you are on: skill points ≈ level - 1.
+// shortcut: ignores Renown skill points, upgrade to an OCR of "Available Points" if milestones run ahead.
+export function levelingStep(steps, level) {
+  const points = Math.max(0, level - 1);
+  const i = steps.findIndex(s => s.nodes.reduce((n, x) => n + x.rank, 0) > points);
+  return { index: i < 0 ? steps.length - 1 : i, points };
+}
+
+// A phase name like "Leveling 1-70" ends at its upper level; past it the next non-leveling phase applies.
+export function phaseForLevel(phases, current, level) {
+  const range = current?.match(/(\d+)\s*-\s*(\d+)/);
+  if (!range || level < +range[2]) return null;
+  const i = phases.indexOf(current);
+  return phases.slice(i + 1).find(p => !/leveling/i.test(p)) ?? null;
+}
+
 // Is the hovered item an upgrade over the equipped one? Weighs the game's own figures (damage/toughness delta,
 // per-stat "(+2)"/"(-1)" and "Properties lost when equipped"), build stats by their guide priority, and item
 // power. Returns kind + reasons + the item's stats grouped as better / lower / equal / lost.

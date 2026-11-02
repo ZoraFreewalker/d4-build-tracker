@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries, rangeMax } from './tracker.mjs';
+import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries, rangeMax, readLevel, levelingStep, phaseForLevel } from './tracker.mjs';
 
 
 test('weapon tooltips: "(Bludgeoning)" type, DPS delta, lost properties (real OCR)', () => {
@@ -301,4 +301,26 @@ test('compare scores against the matching build slot', () => {
   assert.equal(r.score, 100); // uniques score on name; affix list stays informational
   phase.slots.Axe.name = 'Other Axe';
   assert.equal(compare(parseTooltips(axeLines)[0], phase).score, 0);
+});
+
+test('character level from the character screen and the level-up message (real OCR)', () => {
+  assert.deepEqual(readLevel([
+    { text: 'Level', x: 2081, y: 970, w: 56, h: 20 },
+    { text: 'War Crest', x: 14, y: 994, w: 50, h: 9 },
+    { text: '23', x: 2438, y: 971, w: 25, h: 19 },
+  ]), { level: 23, source: 'sheet' });
+  assert.deepEqual(readLevel([{ text: '"vetuatulations, you have reh9hed Level 24!', x: 13, y: 1305, w: 476, h: 25 }]), { level: 24, source: 'levelup' });
+  assert.equal(readLevel([{ text: 'Requires Level 19', x: 2641, y: 915, w: 170, h: 22 }]), null);
+});
+
+test('leveling milestone and phase switch by level', () => {
+  const step = (name, rank) => ({ name, nodes: [{ id: 1, rank }] });
+  const steps = [step('a', 5), step('b', 12), step('c', 30)];
+  assert.equal(levelingStep(steps, 4).index, 0);
+  assert.equal(levelingStep(steps, 10).index, 1);
+  assert.equal(levelingStep(steps, 60).index, 2);
+  const names = ['Leveling 1-70', 'Starter', 'Leveling Skill Tree', 'Endgame'];
+  assert.equal(phaseForLevel(names, 'Leveling 1-70', 69), null);
+  assert.equal(phaseForLevel(names, 'Leveling 1-70', 70), 'Starter');
+  assert.equal(phaseForLevel(names, 'Starter', 70), null);
 });

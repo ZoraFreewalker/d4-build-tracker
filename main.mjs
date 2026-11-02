@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import updaterPkg from 'electron-updater';
 import { SCHEMA } from './importer.mjs';
 import { createLibrary } from './library.mjs';
-import { compare, outside, parseTooltips, progress, sameSlot, screenContext, verdict } from './tracker.mjs';
+import { compare, levelingStep, outside, parseTooltips, phaseForLevel, progress, readLevel, sameSlot, screenContext, verdict } from './tracker.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 // the .ps1 scripts must be real files for powershell, so the installer ships them next to app.asar
@@ -78,7 +78,7 @@ function ocr(file) {
 }
 
 // Captures the primary display. crop 'cursor' keeps a band around the cursor (tooltips sit next to it),
-// 'right' the right side (the ABILITIES panel), 'none' everything. Returns the file and the band's x offset.
+// 'right' the right side (the ABILITIES panel, character screen), 'left' the left edge (level-up message), 'none' everything. Returns the file and the band's x offset.
 async function grabScreen({ crop = 'cursor' } = {}) {
   const d = screen.getPrimaryDisplay();
   const width = Math.round(d.size.width * d.scaleFactor), height = Math.round(d.size.height * d.scaleFactor);
@@ -91,6 +91,8 @@ async function grabScreen({ crop = 'cursor' } = {}) {
   } else if (crop === 'right') {
     offsetX = Math.round(width * 0.6);
     cropWidth = width - offsetX;
+  } else if (crop === 'left') {
+    cropWidth = Math.round(width * 0.2);
   }
   const t0 = Date.now();
   const bytes = await grabFromStream(offsetX, cropWidth);
@@ -222,11 +224,12 @@ async function detectContext() {
   const { file, offsetX } = await grabScreen({ crop: 'right' });
   let lines;
   try { lines = await ocr(file); } finally { setTimeout(() => rm(file, { force: true }).catch(() => {}), 2000); }
+  lines = outside(lines.map(l => ({ ...l, x: l.x + offsetX })), ownRects());
+  setLevel(readLevel(lines));
   const next = screenContext(lines);
   // the paragon screen is only inferred (no sample yet): keep the first one so detection can be verified
   if (next === 'paragon' && !paragonKept) {
     paragonKept = true;
-    for (const l of lines) l.x += offsetX;
     await keepFrame('paragon', file, lines).catch(() => {});
   }
   // a single missed read (a node tooltip covering the header) must not close the skills view: leave only
@@ -234,6 +237,37 @@ async function detectContext() {
   contextMisses = next ? 0 : contextMisses + 1;
   if (!next && context && contextMisses < 2) return;
   if (next !== context) { context = next; send(); }
+}
+
+// ---------- character level: character screen (via detectContext) + level-up message ----------
+async function detectLevelUp() {
+  const { file } = await grabScreen({ crop: 'left' });
+  let lines;
+  try { lines = await ocr(file); } finally { setTimeout(() => rm(file, { force: true }).catch(() => {}), 2000); }
+  setLevel(readLevel(outside(lines, ownRects())));
+}
+// the leveling order: the phase whose skill tree has the most milestones (e.g. "Leveling Skill Tree")
+const levelingPhase = () => phases().reduce((best, p) => ((p.skills?.steps.length ?? 0) > (best?.skills?.steps.length ?? 1) ? p : best), null);
+function setLevel(found) {
+  if (!found || found.level === state.level) return;
+  // the message stays on screen a few seconds: it only moves forward; the character screen is the truth (other character)
+  if (found.source === 'levelup' && found.level < (state.level ?? 0)) return;
+  const up = found.level > (state.level ?? Infinity);
+  state.level = found.level;
+  save();
+  const next = phaseForLevel(phases().map(p => p.name), phase()?.name, found.level);
+  if (next) {
+    buildState().phase = next;
+    sendBuild();
+    return notify(`Level ${found.level}: fase → ${next}`, 'ok');
+  }
+  const steps = levelingPhase()?.skills.steps;
+  if (up && steps) {
+    const { index, points } = levelingStep(steps, found.level);
+    const total = steps[index].nodes.reduce((n, x) => n + x.rank, 0);
+    notify(`Level ${found.level} · skillpunt ${points}: mijlpaal "${steps[index].name}" (${total} pnt)`, 'ok');
+  } else if (up) notify(`Level ${found.level}`, 'ok');
+  send();
 }
 
 // what the remembered equipped items have per build slot (stat values for "nodig 30 · nu 14")
@@ -259,6 +293,7 @@ function send(extra = {}) {
   const data = JSON.stringify({
     build: build?.name ?? null, phase: ph?.name ?? null, phases: phases().map(p => p.name),
     gameRunning: gameRunning || !!imageArg, ocr: settings().ocr, hotkeys: settings().hotkeys, opacity: settings().opacity, exclusive,
+    level: state.level ?? null, levelStep: state.level && levelingPhase() ? levelingStep(levelingPhase().skills.steps, state.level).index : null,
     progress: ph ? progress(ph, buildState().seen[ph.name]) : null, current: ph ? currentGear(ph) : {}, context, results: [], ...extra,
   });
   if (data === lastSent) return;
@@ -267,8 +302,7 @@ function send(extra = {}) {
 }
 // the full phase (skills, paragon) only goes out when build or phase changes
 function sendBuild() {
-  // leveling order: the phase whose skill tree has the most milestones (e.g. "Leveling Skill Tree")
-  const lv = phases().reduce((best, p) => ((p.skills?.steps.length ?? 0) > (best?.skills?.steps.length ?? 1) ? p : best), null);
+  const lv = levelingPhase();
   const payload = { name: build?.name ?? null, phase: phase(), leveling: lv ? { from: lv.name, steps: lv.skills.steps } : null };
   overlay?.webContents.send('build', payload);
   detail?.webContents.send('build', payload);
@@ -310,7 +344,7 @@ async function tick() {
   try { lines = await ocr(frame); } finally { if (frame !== imageArg) setTimeout(() => rm(frame, { force: true }).catch(() => {}), 2000); }
   for (const l of lines) l.x += offsetX;
   if (!imageArg) lines = outside(lines, ownRects());
-  else context = screenContext(lines); // test images: detect the screen from the same frame
+  else { context = screenContext(lines); setLevel(readLevel(lines)); } // test images: screen + level from the same frame
   const tooltips = parseTooltips(lines);
   if (!imageArg && !tooltips.length && lines.some(l => /item power/i.test(l.text))) await keepUnrecognized(frame, lines);
   if (process.env.D4_DEBUG) console.log('ocr lines', lines.length, lines.slice(0, 3).map(l => l.text).join(' | '));
@@ -674,6 +708,7 @@ app.whenReady().then(async () => {
     try {
       const active = (gameRunning || !!imageArg) && settings().ocr;
       if (active && !imageArg && n % 12 === 0) await detectContext(); // every ~3 s
+      else if (active && !imageArg && n % 12 === 6) await detectLevelUp();
       else if (!active && context) { context = null; }
       if (active) await tick(); else send();
     } catch (e) {
