@@ -318,12 +318,9 @@ function shouldCapture() {
   const p = screen.getCursorScreenPoint(), now = Date.now();
   const moved = !lastCursor || Math.abs(p.x - lastCursor.x) + Math.abs(p.y - lastCursor.y) > 6;
   lastCursor = p;
-  if (moved) {
-    restSince = now;
-    // the cursor left the item: its tooltip is gone too
-    if (lastResults.length && now - lastCaptureAt > RECHECK_MS) { lastResults = []; send({ results: [] }); }
-    return false;
-  }
+  // moving does not clear the shown item: a small nudge while comparing made the overlay flip back and forth.
+  // It goes once the next captures find no tooltip (see tick) or another item replaces it.
+  if (moved) { restSince = now; return false; }
   if (now - restSince < REST_MS) return false;
   const samePlace = lastCaptureCursor && lastCaptureCursor.x === p.x && lastCaptureCursor.y === p.y;
   if (samePlace && now - lastCaptureAt < RECHECK_MS) return false;
@@ -370,9 +367,13 @@ async function tick() {
   if (after > before) notify(`Build-voortgang ${before}% → ${after}%`, 'ok');
   for (const r of results.filter(r => r.verdict?.kind === 'upgrade')) notifyOnce(r.name, `▲ Upgrade: ${r.name || 'item'}${r.verdict.pos[0] ? ` (${r.verdict.pos[0]})` : ''}`);
 
-  // OCR misses a frame now and then (mouse moving, tooltip fading in): keep the last result for ~1 s
+  // OCR misses a frame now and then (mouse moving, tooltip fading in): keep the last result for 3 empty captures
   if (!results.length && lastResults.length && ++emptyTicks < 3) return send({ results: lastResults });
   emptyTicks = 0;
+  // the same item read again: OCR differs slightly per frame, so keep what is shown unless the new read has
+  // more (the first frame can catch the tooltip while it fades in)
+  const names = list => list.map(r => r.name).join('|');
+  if (results.length && names(results) === names(lastResults) && JSON.stringify(results).length <= JSON.stringify(lastResults).length) return;
   lastResults = results;
   send({ results });
 }
