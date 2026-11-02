@@ -411,13 +411,18 @@ function startDrag(mode) {
   const [x, y] = overlay.getPosition();
   const scale = state.window.scale, w0 = Math.round(BASE.width * scale), h0 = winHeight();
   const edges = mode.startsWith('resize-') ? mode.slice(7) : '';
+  let last = start, stillSince = Date.now();
   dragTimer = setInterval(() => {
     const p = screen.getCursorScreenPoint(), dx = p.x - start.x, dy = p.y - start.y;
+    // The mouseup only reaches us while the cursor is over the overlay. When an edge stops at the minimum or
+    // maximum size and the cursor runs on, the release happens outside and the drag would never end
+    // (overlay stuck until restart). So: end once the cursor is clearly outside, or hasn't moved for a while.
+    const b = overlay.getBounds();
+    if (p.x < b.x - 40 || p.x > b.x + b.width + 40 || p.y < b.y - 40 || p.y > b.y + b.height + 40) return endDrag();
+    if (p.x !== last.x || p.y !== last.y) { last = p; stillSince = Date.now(); } else if (Date.now() - stillSince > 4000) return endDrag();
     // setBounds with a fixed size: setPosition alone makes the window grow under Windows display scaling
     if (mode === 'move') return overlay.setBounds({ x: x + dx, y: y + dy, width: w0, height: h0 });
     if (mode === 'scale') {
-      const b = overlay.getBounds();
-      if (p.y < b.y - 40 || p.y > b.y + b.height + 40) return endDrag(); // cursor left the overlay, mouseup would be lost
       const next = clampScale(scale + dx / BASE.width);
       return applyScale(next, [x, y], h0 * (next / scale));
     }
@@ -442,6 +447,8 @@ function endDrag() {
 function watchInteractive(win, scaleOf, rectsRef) {
   let interactive = false;
   win.setIgnoreMouseEvents(true);
+  // after hide/show the window's click-through flag must be set again; null forces that on the next poll
+  win.on('show', () => { interactive = null; });
   setInterval(() => {
     if (win.isDestroyed() || !win.isVisible()) return;
     const p = screen.getCursorScreenPoint(), b = win.getBounds(), s = scaleOf();
