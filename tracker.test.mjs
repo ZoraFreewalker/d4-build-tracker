@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries, rangeMax, readLevel, levelingStep, phaseForLevel } from './tracker.mjs';
+import { parseTooltips, compare, hasText, slotType, progress, outside, screenContext, itemPower, gameDeltas, affixValue, verdict, affixEntries, rangeMax, readLevel, levelingStep, phaseForLevel, readClass } from './tracker.mjs';
 
 
 test('weapon tooltips: "(Bludgeoning)" type, DPS delta, lost properties (real OCR)', () => {
@@ -323,4 +323,11 @@ test('leveling milestone and phase switch by level', () => {
   assert.equal(phaseForLevel(names, 'Leveling 1-70', 69), null);
   assert.equal(phaseForLevel(names, 'Leveling 1-70', 70), 'Starter');
   assert.equal(phaseForLevel(names, 'Starter', 70), null);
+});
+
+test('class from its resource on screen', () => {
+  const l = (...texts) => texts.map(text => ({ text, x: 0, y: 0, w: 1, h: 1 }));
+  assert.equal(readClass(l('Strength 191', 'Fury Regeneration 3')), 'Barbarian');
+  assert.equal(readClass(l('+12 Maximum Mana')), 'Sorcerer');
+  assert.equal(readClass(l('+40 Maximum Resource', 'Spirit Hall', 'Rune_Effect_SummonSpiritWolf')), null);
 });

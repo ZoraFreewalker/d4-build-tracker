@@ -181,7 +181,7 @@ function makeParagon(min, en) {
 }
 
 // bump when the build file gets new fields: the app re-imports older builds automatically
-export const SCHEMA = 3; // 3: sockets with names and effects
+export const SCHEMA = 4; // 3: sockets with names and effects, 4: aspect names
 
 // unique items carry their boss loot pool ("families" in the game data); the game's tooltip names the same boss
 const LOOT_POOLS = {
@@ -220,7 +220,11 @@ export function buildFromProfile(profile, min, en) {
         itemId: it.id,
         unique: /_Unique_/.test(it.id),
         name: en.items[it.id]?.name ?? it.name ?? null,
-        aspects: (it.aspects ?? []).map(affixText),
+        // the name as the guide shows it ("Heavy Hitting Aspect"), next to its effect text
+        aspects: (it.aspects ?? []).map(affixText).map(a => {
+          const t = en.affixes[a.key] ?? {};
+          return { ...a, name: t.prefix ? `${t.prefix} Aspect` : t.suffix ? `Aspect ${t.suffix}` : null };
+        }),
         // the guide's "Gear & Stat Priorities" lists the affixes in the order the author put them in the planner
         affixes: (it.explicits ?? []).map((a, i) => ({ ...affixText(a), greater: !!a.greater, priority: i + 1 })),
         implicits: (it.implicits ?? []).map(affixText),

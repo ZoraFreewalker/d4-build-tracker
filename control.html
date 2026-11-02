@@ -45,6 +45,7 @@
 <h2>Overlay</h2>
 <label><input type="checkbox" id="ocr"> Items herkennen tijdens het spelen (schermopname + OCR)</label>
 <label><input type="checkbox" id="notify"> Meldingen bij build-voortgang en upgrades (ook als de overlay verborgen is)</label>
+<label><input type="checkbox" id="badge"> Label boven de tooltip: upgrade / sidegrade / geen upgrade</label>
 <label><input type="checkbox" id="locked"> Positie en grootte vastzetten</label>
 <div class="grid">
   <span>Doorzichtigheid overlay <b id="ov-val"></b></span><input type="range" id="overlay-opacity" min="0.3" max="1" step="0.05" aria-label="Doorzichtigheid hele overlay">
@@ -61,6 +62,7 @@
 <div class="row" style="margin-top:10px">
   <button id="reset-progress">Voortgang van actieve build wissen</button>
   <button id="open-debug">Map met opgeslagen schermen openen</button>
+  <button id="debug-report">Debug-rapport maken (zip op bureaublad)</button>
 </div>
 <div class="status" id="settings-status" role="status"></div>
 <div class="muted" style="margin-top:16px">In de overlay: ⠿ slepen = verplaatsen, ⤡ slepen = schalen, ⚙ = dit venster. Het tray-icoon heeft dezelfde opties.</div>
@@ -101,6 +103,7 @@ async function refresh() {
   $('opacity').value = lib.settings.opacity;
   $('overlay-opacity').value = lib.settings.overlayOpacity;
   $('notify').checked = lib.settings.notify;
+  $('badge').checked = lib.settings.badge;
   showPct();
   $('hk-overlay').value = lib.settings.hotkeys.overlay;
   $('hk-detail').value = lib.settings.hotkeys.detail;
@@ -137,6 +140,7 @@ const showPct = () => { $('ov-val').textContent = `${Math.round($('overlay-opaci
 $('opacity').oninput = () => { showPct(); saveSettings({ opacity: Number($('opacity').value) }); };
 $('overlay-opacity').oninput = () => { showPct(); saveSettings({ overlayOpacity: Number($('overlay-opacity').value) }); };
 $('notify').onchange = () => saveSettings({ notify: $('notify').checked });
+$('badge').onchange = () => saveSettings({ badge: $('badge').checked });
 $('save-hotkeys').onclick = () => saveSettings({ hotkeys: { overlay: $('hk-overlay').value.trim(), detail: $('hk-detail').value.trim(), exclusive: $('hk-exclusive').value.trim(), capture: $('hk-capture').value.trim() } });
 $('reset-progress').onclick = async () => {
   if (!confirm('Voortgang (gezien equipped items) van de actieve build wissen? Hover daarna je equipped items opnieuw.')) return;
@@ -144,6 +148,11 @@ $('reset-progress').onclick = async () => {
   setStatus('settings-status', 'Voortgang gewist.', 'ok');
 };
 $('open-debug').onclick = () => t.openDebug();
+$('debug-report').onclick = async () => {
+  setStatus('settings-status', 'Rapport maken…');
+  const zip = await t.debugReport();
+  setStatus('settings-status', zip ? `Rapport opgeslagen: ${zip}` : 'Rapport maken mislukt (zie log).', zip ? 'ok' : 'error');
+};
 $('reset').onclick = () => saveSettings({ resetWindow: true });
 refresh();
 </script>

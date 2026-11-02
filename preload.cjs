@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('tracker', {
   settings: change => ipcRenderer.invoke('settings', change),
   resetProgress: () => ipcRenderer.invoke('reset-progress'),
   openDebug: () => ipcRenderer.invoke('open-debug'),
+  debugReport: () => ipcRenderer.invoke('debug-report'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   onUpdateReady: cb => ipcRenderer.on('update-ready', (_e, v) => cb(v)),
 });

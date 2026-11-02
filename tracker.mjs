@@ -186,6 +186,7 @@ export function parseTooltips(lines) {
       equipped: col.some(l => /^equipped$/i.test(l.text.trim()) && l.y < head.y),
       power: itemPower(top),
       deltas: gameDeltas(top),
+      box: { x: left + 45, y: (nameLines[0] ?? head).y }, // top-left of the tooltip text, for the badge
       // the base stat ("8 Armor", "19 Armor (-21.5% Toughness)", "92 All Resist") has no "+" and is not an affix
       body: body.filter(l => !/^[\d,.]+\s+(armor|all resist)\b/i.test(l.text.trim())).map(l => l.text).join(' '),
     };
@@ -343,6 +344,17 @@ export function readLevel(lines) {
   for (const label of lines.filter(l => /^level$/i.test(l.text.trim()))) {
     const value = lines.find(v => /^\d{1,3}$/.test(v.text.trim()) && v.x > label.x && v.x - label.x < 20 * label.h && Math.abs(v.y - label.y) < label.h / 2);
     if (value && valid(+value.text)) return { level: +value.text, source: 'sheet' };
+  }
+  return null;
+}
+
+// The class you play, from its resource on screen: the character screen's stats ("Maximum Fury") and item
+// affixes ("Fury Regeneration") only show your own class resource.
+const RESOURCE_CLASS = { fury: 'Barbarian', spirit: 'Druid', essence: 'Necromancer', energy: 'Rogue', mana: 'Sorcerer', vigor: 'Spiritborn', faith: 'Paladin' };
+export function readClass(lines) {
+  for (const l of lines) {
+    const m = l.text.match(/\b(?:maximum|max)\s+(fury|spirit|essence|energy|mana|vigor|faith)\b|\b(fury|spirit|essence|energy|mana|vigor|faith)\s+(?:regeneration|cost reduction|on kill)\b/i);
+    if (m) return RESOURCE_CLASS[(m[1] ?? m[2]).toLowerCase()];
   }
   return null;
 }

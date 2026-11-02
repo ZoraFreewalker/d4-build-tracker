@@ -32,7 +32,7 @@
   /* the panels fill the window, so its edges are the panels' edges and can be dragged like a window */
   body:not(.detail):not(.toast) #app { display: flex; flex-direction: column; height: 100vh; }
   #head { flex: none; }
-  #body { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 0; }
+  #body { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 0; } #body.fit { flex: 0 1 auto; } /* compact: as tall as its content */
   .rz { position: fixed; z-index: 10; }
   .rz.n, .rz.s { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
   .rz.e, .rz.w { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
@@ -72,13 +72,15 @@
   .hints { margin-top: 6px; font-size: 11px; color: var(--muted); }
   .excl { margin-top: 6px; font-size: 12px; color: #14110e; background: var(--gold); border-radius: 4px; padding: 3px 8px; font-weight: 600; }
   .toast-msg { margin: 6px; padding: 12px 16px; border-radius: 8px; background: rgba(14, 12, 10, 0.95); border: 1px solid var(--line);
-               border-left: 5px solid var(--gold); color: var(--text); font-size: 15px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
-  .toast-msg.ok { border-left-color: var(--ok); }
+               border-left: 5px solid var(--gold); color: var(--text); font-size: 15px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,.5);
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .toast-msg.ok { border-left-color: var(--ok); } .toast-msg.bad { border-left-color: #e07070; } .toast-msg.warn { border-left-color: #e0b050; }
   .verdict { border: 1px solid #3d3326; border-left-width: 4px; border-radius: 4px; padding: 6px 8px; margin: 6px 0; background: #1c1814; }
   .verdict[data-kind="upgrade"] { border-left-color: var(--ok); } .verdict[data-kind="downgrade"] { border-left-color: var(--bad); }
   .verdict[data-kind="sidegrade"] { border-left-color: var(--warn); }
   .verdict b { font-size: 14px; }
   ol.order { margin: 4px 0; padding-left: 20px; } ol.order > li { margin-bottom: 6px; } ol.order > li > b { color: var(--gold); } ol.order > li.cur { outline: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; background: #2e271e; }
+  .aspect { margin: 3px 0; } .aspect-fx { font-size: 12px; color: var(--text); padding-left: 14px; }
   .sockets { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #3d3326; }
   .sock-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .sock { margin: 2px 0; } .sock-gem { color: #7fd3ff; font-weight: 600; } .sock-rune { color: #c37cf2; font-weight: 600; } .sock-other { color: #ff8000; font-weight: 600; }
@@ -123,7 +125,9 @@ const keep = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 
 let live = null, phase = null, buildName = null, leveling = null, menuOpen = false;
 let lastContext = null, manualFor = null, lastHeadKey = ''; // in-game screen; manualFor = the screen during which a tab was clicked
-let tab = new URLSearchParams(location.search).get('tab') ?? load('tab', 'gear'); // ?tab= is a dev hook for snapshots
+const devTab = new URLSearchParams(location.search).get('tab'); // ?tab= is a dev hook for snapshots (also "compact")
+let compact = devTab === 'compact' || load('compact', false); // small view: progress, next step, verdict while hovering
+let tab = (devTab !== 'compact' && devTab) || load('tab', 'gear');
 let paragonStep = null, boardIdx = 0;
 
 // ---------- paragon drawing (data comes from the build file, so only textContent/attributes, never HTML) ----------
@@ -304,13 +308,16 @@ function gearTab(body) {
   else body.append(el('div', 'muted', 'Hover over een item. Open je character-scherm om equipped items te tellen.'));
   // what every slot needs, so the build guide never has to be opened; "nu" = the remembered equipped item
   if (phase?.slots && Object.keys(phase.slots).length) {
+    const ac = aspectCount();
     body.append(el('h2', null, 'Wat je nodig hebt'), prioLegend());
+    if (ac.total) body.append(el('div', 'muted', `Aspecten: ${ac.have}/${ac.total} in bezit. Hover een aspect in je Codex of Power om het af te vinken.`));
     const scores = Object.fromEntries((p?.slots ?? []).map(s => [s.slot, s.score]));
     for (const [slot, s] of Object.entries(phase.slots)) {
       const now = live?.current?.[slot];
       const box = el('div', 'item');
       const r = el('div', 'row'); r.append(el('b', null, slot), el('b', scoreCls(scores[slot] ?? 0), `${scores[slot] ?? 0}%`));
-      box.append(r, el('div', 'muted', s.unique ? `Unique: ${s.name}` : s.aspects.map(a => a.text).join(' / ') || s.name || ''));
+      box.append(r, el('div', 'muted', s.unique ? `Unique: ${s.name}` : s.aspects.length ? '' : s.name || ''));
+      for (const a of s.aspects) box.append(aspectLine(a)); // also on uniques that take one (Locran's Talisman)
       if (now) box.append(el('div', 'muted', `nu: ${now.name}`));
       if (s.drops) box.append(el('div', 'drop', `📍 Drop: ${s.drops.join(' / ')}`));
       const ul = el('ul');
@@ -351,6 +358,44 @@ function socketList(sockets) {
     wrap.append(row);
   }
   return wrap;
+}
+
+// an aspect of the build: its guide name, whether you have it (Codex hover, drop or equipped) and its effect
+function aspectLine(a) {
+  const has = live?.aspects?.includes(a.key);
+  const line = el('div', 'aspect');
+  line.append(el('b', has ? 'ok' : 'warn', `${has ? '✓' : '○'} ${a.name ?? 'Aspect'}`), el('span', 'muted', ` — ${has ? 'in bezit' : 'nog niet gevonden'}`), el('div', 'aspect-fx', a.text));
+  return line;
+}
+const aspectCount = () => {
+  const all = [...new Set(Object.values(phase?.slots ?? {}).flatMap(s => s.aspects.map(a => a.key)))];
+  return { have: all.filter(k => live?.aspects?.includes(k)).length, total: all.length };
+};
+
+// compact: only what matters while playing; the verdict replaces it while an item is hovered
+function compactView(body) {
+  const p = live?.progress;
+  const hovering = live?.ocr && live?.gameRunning && live.results.length > 0;
+  if (hovering) {
+    for (const r of live.results.filter(r => r.verdict)) body.append(verdictBox(r));
+    if (!live.results.some(r => r.verdict)) body.append(el('div', 'muted', live.results.map(r => r.name).join(', ')));
+    return;
+  }
+  body.append(el('div', 'muted', `${live?.level ? `Level ${live.level} · ` : ''}${phase?.name ?? ''}`));
+  if (p) {
+    const r = el('div', 'row'); r.append(el('span', null, 'Build'), el('b', scoreCls(p.percent), `${p.percent}%`));
+    const bar = el('div', 'bar'); const fill = el('div'); fill.style.width = `${p.percent}%`; bar.append(fill);
+    body.append(r, bar);
+    if (p.next && p.next.score < 100) {
+      const need = phase?.slots?.[p.next.slot];
+      body.append(el('div', null, `Volgende: ${p.next.slot}${need?.unique ? ` → ${need.name}` : ''}`));
+      if (need?.drops) body.append(el('div', 'drop', `📍 ${need.drops.join(' / ')}`));
+    }
+  }
+  const ac = aspectCount();
+  if (ac.total) body.append(el('div', null, `Aspecten: ${ac.have}/${ac.total} in bezit`));
+  const step = leveling?.steps?.[live?.levelStep];
+  if (step) body.append(el('div', null, `Skills: mijlpaal "${step.name}"`));
 }
 
 function itemBox(r) {
@@ -454,11 +499,19 @@ function render() {
   const move = el('span', 'icon grip', '⠿'); move.dataset.drag = 'move'; move.title = 'Slepen om te verplaatsen';
   const gear = el('button', 'icon', '⚙'); gear.title = 'Builds & instellingen'; gear.onclick = () => t.openControl();
   const scale = el('span', 'icon grip', '⤡'); scale.dataset.drag = 'scale'; scale.title = 'Naar links/rechts slepen om te schalen';
-  top.append(move, el('h1', null, buildName ?? 'Geen build'), gear, scale);
+  const size = el('button', 'icon', compact ? '▣' : '▭'); size.title = compact ? 'Volledige weergave' : 'Compacte weergave';
+  size.onclick = () => { compact = !compact; keep('compact', compact); render(); };
+  top.append(move, el('h1', null, buildName ?? 'Geen build'), size, gear, scale);
   head.append(top);
   if (!buildName) {
     head.append(el('div', 'muted', 'Plak een Maxroll-link via ⚙ om te beginnen.'));
     app.append(head);
+    return reportRects();
+  }
+  if (compact) {
+    const body = el('div', 'panel fit'); body.id = 'body';
+    try { compactView(body); } catch (e) { console.error(e); }
+    app.append(head, body);
     return reportRects();
   }
   const dd = el('button', 'dd', `${live?.level ? `Level ${live.level} · ` : ''}Fase: ${phase?.name ?? '-'} ▾`);
@@ -552,7 +605,7 @@ t.onUpdate(d => {
   const contextChanged = (d.context ?? null) !== lastContext;
   lastContext = d.context ?? null;
   if (!lastContext) manualFor = null;
-  if (isDetail ? !document.querySelector('.close-hint') : contextChanged || headChanged || (lastContext ?? tab) === 'gear' || !document.getElementById('body')) render();
+  if (isDetail ? !document.querySelector('.close-hint') : contextChanged || headChanged || compact || (lastContext ?? tab) === 'gear' || !document.getElementById('body')) render();
 });
 render();
 </script>

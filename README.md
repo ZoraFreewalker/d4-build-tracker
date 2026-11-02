@@ -14,6 +14,12 @@ Start `dist/D4-Build-Tracker-Setup-<versie>.exe` (of download hem van GitHub Rel
 - Sneltoetsen (aan te passen): `Alt+Shift+I` bedienmodus (overlay vrij klikken/scrollen, spel gedimd; Esc = terug), `Alt+Shift+O` overlay aan/uit, `Alt+Shift+B` alle paragon boards groot.
 - Updates: de geïnstalleerde app haalt nieuwe versies automatisch op van GitHub Releases en installeert ze bij afsluiten (of via "Nu herstarten").
 - Equipped items tellen mee zodra je ze in je character-scherm hovert.
+- Label boven de tooltip: "▲ Upgrade / ≈ Sidegrade / ▼ Geen upgrade" met de belangrijkste reden (uit te zetten in ⚙).
+- Compacte weergave (▭ in de kop): alleen build-%, volgende slot, aspecten en skill-mijlpaal; tijdens hoveren het oordeel.
+- Aspecten: naam zoals in de guide en of je hem al hebt. Hover een aspect in je Codex of Power om hem af te vinken.
+- Class: de app ziet aan je resource (Fury, Mana, …) welke class je speelt en wisselt naar je build voor die class, of waarschuwt.
+- Meerdere monitoren: de app leest het scherm waar Diablo IV op staat.
+- Problemen? ⚙ → "Debug-rapport maken" zet log, instellingen en de laatste opnames in een zip op je bureaublad.
 - Level: gelezen uit je character-scherm en de level-up melding. De overlay markeert je mijlpaal in de levelvolgorde, meldt elke level-up en schakelt bij level 70 van "Leveling 1-70" naar de volgende fase.
 
 Data staat in `%APPDATA%\D4 Build Tracker` (builds, voortgang, speldata-cache, `debug/` met onherkende tooltips).

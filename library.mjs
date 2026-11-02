@@ -47,7 +47,7 @@ export function createLibrary(dir, net = { getJson, resolveProfileId }) {
     async list() {
       const files = await readdir(path.join(dir, 'builds')).catch(() => []);
       const builds = await Promise.all(files.filter(f => f.endsWith('.json')).map(f => readJson(path.join(dir, 'builds', f))));
-      return builds.filter(Boolean).map(b => ({ id: buildId(b.source), name: b.name, source: b.source, importedAt: b.importedAt, phases: b.phases.map(p => p.name) }));
+      return builds.filter(Boolean).map(b => ({ id: buildId(b.source), name: b.name, source: b.source, importedAt: b.importedAt, phases: b.phases.map(p => p.name), class: b.phases[0]?.class ?? null }));
     },
     get: id => readJson(buildFile(id), null),
 
