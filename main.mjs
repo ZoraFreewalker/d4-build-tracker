@@ -259,14 +259,14 @@ function setLevel(found) {
   if (next) {
     buildState().phase = next;
     sendBuild();
-    return notify(`Level ${found.level}: fase → ${next}`, 'ok');
+    return notify(`Level ${found.level}: fase → ${next}`, 'ok', 8000);
   }
   const steps = levelingPhase()?.skills.steps;
   if (up && steps) {
     const { index, points } = levelingStep(steps, found.level);
     const total = steps[index].nodes.reduce((n, x) => n + x.rank, 0);
-    notify(`Level ${found.level} · skillpunt ${points}: mijlpaal "${steps[index].name}" (${total} pnt)`, 'ok');
-  } else if (up) notify(`Level ${found.level}`, 'ok');
+    notify(`Level ${found.level} · skillpunt ${points}: mijlpaal "${steps[index].name}" (${total} pnt)`, 'ok', 8000);
+  } else if (up) notify(`Level ${found.level}`, 'ok', 8000);
   send();
 }
 
@@ -387,7 +387,7 @@ function notifyOnce(key, text) {
   notified.set(key, Date.now());
   notify(text, 'ok');
 }
-function notify(text, kind) {
+function notify(text, kind, ms = 2500) {
   if (process.env.D4_DEBUG) console.log('notify', text);
   if (settings().notify === false || (!gameRunning && !imageArg)) return;
   if (!toast || toast.isDestroyed()) {
@@ -404,7 +404,7 @@ function notify(text, kind) {
   // the first message waits for the page; isLoading() is still false right after loadFile()
   toastReady.then(() => { if (toast.isDestroyed()) return; toast.webContents.send('toast', { text, kind }); toast.showInactive(); });
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast?.isDestroyed() || toast.hide(), 2500);
+  toastTimer = setTimeout(() => toast?.isDestroyed() || toast.hide(), ms);
 }
 
 // equipped items seen in tooltips, so a new drop can be judged without the comparison tooltip on screen.
@@ -484,8 +484,12 @@ function watchInteractive(win, scaleOf, rectsRef) {
   win.setIgnoreMouseEvents(true);
   // after hide/show the window's click-through flag must be set again; null forces that on the next poll
   win.on('show', () => { interactive = null; });
+  let polls = 0;
   setInterval(() => {
     if (win.isDestroyed() || !win.isVisible()) return;
+    // Windows can drop the click-through flag behind our back (opacity/bounds changes, focus switches), after
+    // which the cached state never matched again and the overlay stayed unclickable: re-apply it every second
+    if (++polls % 20 === 0) interactive = null;
     const p = screen.getCursorScreenPoint(), b = win.getBounds(), s = scaleOf();
     const inside = (win === overlay && (!!dragTimer || exclusive)) || rectsRef().some(r => p.x >= b.x + r.x * s && p.x <= b.x + (r.x + r.width) * s
       && p.y >= b.y + r.y * s && p.y <= b.y + (r.y + r.height) * s);

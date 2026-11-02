@@ -464,7 +464,8 @@ function render() {
   else if (hk) head.append(el('div', 'hints', `${hk.exclusive} bedienen · ${hk.overlay} verbergen · ${hk.detail} paragon`));
 
   const body = el('div', 'panel'); body.id = 'body';
-  ({ gear: gearTab, skills: skillsTab, paragon: paragonTab })[shown](body);
+  // a failing tab must not leave the overlay without its header (tabs, drag grip) or clickable areas
+  try { ({ gear: gearTab, skills: skillsTab, paragon: paragonTab })[shown](body); } catch (e) { console.error(e); body.append(el('div', 'muted', 'Kon dit tabblad niet tonen.')); }
   app.append(head, body);
   body.scrollTop = scroll;
   reportRects();
@@ -476,6 +477,8 @@ function reportRects() {
   t.rects(parts.map(e => { const { x, y, width, height } = e.getBoundingClientRect(); return { x, y, width, height }; }).filter(r => r.width && r.height));
 }
 new ResizeObserver(() => !isDetail && reportRects()).observe(document.getElementById('app'));
+// layout can shift without #app resizing (zoom, menus): stale areas made parts of the overlay unclickable
+if (!isDetail && !isToast && !isDim) setInterval(reportRects, 1000);
 document.addEventListener('mousedown', e => { const g = e.target.closest('.grip'); if (g) { e.preventDefault(); t.dragStart(g.dataset.drag); } });
 document.addEventListener('mouseup', () => t.dragEnd());
 
