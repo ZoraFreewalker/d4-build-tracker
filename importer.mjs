@@ -83,6 +83,32 @@ function makeLookup(min, en) {
   };
 }
 
+// What goes in a slot's sockets, by name and with the effect it has in that slot (as on the guide).
+// Gems have one effect per slot kind (socketedEffects 0 weapon, 1 armor, 2 jewelry); a rune pair forms a runeword.
+const JEWELRY = /^(Ring|Amulet)/, ARMOR = /^(Helm|ChestArmor|Legs|Gloves|Boots)/;
+export function socketsOf(min, en, ids, slotType) {
+  const kind = JEWELRY.test(slotType) ? 2 : ARMOR.test(slotType) ? 1 : 0; // shortcut: off-hands count as weapon
+  const out = [];
+  for (const id of ids) {
+    const item = min.items[id], text = en.items[id];
+    const name = text?.name ?? id.replace(/_/g, ' ');
+    const same = out.find(o => o.id === id);
+    if (same) { same.count++; continue; }
+    if (item?.rune) {
+      // {s1} scales with the rune's Offering in game, so it has no fixed value; "|4second:seconds;" is a plural
+      const effect = render(text?.rune?.desc ?? '').replace(/\{s\d\}/g, '#').replace(/\|\d[^:|;]*:([^;]*);/g, '$1');
+      out.push({ id, name, kind: item.type === 'ConditionRune' ? 'condition' : 'effect', effect, count: 1 });
+      continue;
+    }
+    const i = (item?.socketedEffects ?? []).findIndex(e => e.type === kind);
+    const effects = item?.socketedEffects?.[i < 0 ? 0 : i];
+    const label = text?.socketedEffects?.[item?.socketedEffects?.length === 1 ? 0 : i];
+    const effect = label ? render(label.label, (effects?.attributes ?? []).map(a => a.value)) : render(text?.desc ?? '');
+    out.push({ id, name, kind: item?.type === 'Gem' ? 'gem' : 'other', effect, count: 1 });
+  }
+  return out;
+}
+
 const SKILL_KINDS = ['skill', 'upgrade', 'passive']; // skillTreeRewards.type 0/1/2
 
 // skill tree node ids are only unique within one class tree (keys like "Barbarian", "Paladin_NEW")
@@ -155,7 +181,7 @@ function makeParagon(min, en) {
 }
 
 // bump when the build file gets new fields: the app re-imports older builds automatically
-export const SCHEMA = 2;
+export const SCHEMA = 3; // 3: sockets with names and effects
 
 // unique items carry their boss loot pool ("families" in the game data); the game's tooltip names the same boss
 const LOOT_POOLS = {
@@ -199,7 +225,7 @@ export function buildFromProfile(profile, min, en) {
         affixes: (it.explicits ?? []).map((a, i) => ({ ...affixText(a), greater: !!a.greater, priority: i + 1 })),
         implicits: (it.implicits ?? []).map(affixText),
         tempered: (it.tempered ?? []).map(affixText),
-        sockets: (it.sockets ?? []).filter(Boolean),
+        sockets: socketsOf(min, en, (it.sockets ?? []).filter(Boolean), type),
         drops: /_Unique_/.test(it.id) ? dropSources(min.items[it.id]) : null,
       };
     }

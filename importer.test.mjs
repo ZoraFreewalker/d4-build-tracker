@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render, buildFromProfile, resolveProfileId, cellCode, dropSources } from './importer.mjs';
+import { render, buildFromProfile, resolveProfileId, cellCode, dropSources, socketsOf } from './importer.mjs';
 
 test('unique drop sources come from the boss loot pool', () => {
   assert.deepEqual(dropSources({ families: ['GrigoireUniques'] }), ['Grigoire, the Galvanic Saint']);
@@ -97,4 +97,22 @@ test('buildFromProfile maps slots, duplicate rings and affix text', () => {
   assert.equal(s.Helm.affixes[0].text, 'unknown affix 99');
   assert.equal(s.Ring.affixes[0].text, '30 Strength');
   assert.equal(s['Ring 2'].aspects[0].text, 'deal 20% more');
+});
+
+test('sockets: gem effect per slot kind, runeword pair, duplicates counted', () => {
+  const min = { items: {
+    Gem_Skull_04: { type: 'Gem', socketedEffects: [{ type: 0, attributes: [{ value: 0.18 }] }, { type: 1, attributes: [{ value: 0.08 }] }, { type: 2, attributes: [{ value: 450 }] }] },
+    Rune_Condition_X: { type: 'ConditionRune', rune: {} },
+    Rune_Effect_Y: { type: 'EffectRune', rune: {} },
+  } };
+  const en = { items: {
+    Gem_Skull_04: { name: 'Skull', socketedEffects: [{ label: 'x[{value}*100|%|] Physical Damage Multiplier' }, { label: '+[{value}*100|1%|] Healing Received' }, { label: '+[{value}||] Physical Resistance' }] },
+    Rune_Condition_X: { name: 'Igni', rune: { desc: '{c_RuneCondition}Stores Offering every {c_number}0.3{/c} |4second:seconds;.{/c}' } },
+    Rune_Effect_Y: { name: 'Sol', rune: { desc: 'Gain {c_number}15%{/c} Damage Reduction for {c_number}{s1}{/c} seconds.' } },
+  } };
+  assert.deepEqual(socketsOf(min, en, ['Gem_Skull_04', 'Gem_Skull_04'], 'Mace2H').map(s => [s.count, s.name, s.effect]), [[2, 'Skull', 'x18% Physical Damage Multiplier']]);
+  assert.equal(socketsOf(min, en, ['Gem_Skull_04'], 'Helm')[0].effect, '+8% Healing Received');
+  assert.equal(socketsOf(min, en, ['Gem_Skull_04'], 'Ring 2')[0].effect, '+450 Physical Resistance');
+  assert.deepEqual(socketsOf(min, en, ['Rune_Condition_X', 'Rune_Effect_Y'], 'ChestArmor').map(s => [s.kind, s.effect]),
+    [['condition', 'Stores Offering every 0.3 seconds.'], ['effect', 'Gain 15% Damage Reduction for # seconds.']]);
 });

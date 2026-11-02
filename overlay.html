@@ -79,6 +79,10 @@
   .verdict[data-kind="sidegrade"] { border-left-color: var(--warn); }
   .verdict b { font-size: 14px; }
   ol.order { margin: 4px 0; padding-left: 20px; } ol.order > li { margin-bottom: 6px; } ol.order > li > b { color: var(--gold); } ol.order > li.cur { outline: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; background: #2e271e; }
+  .sockets { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #3d3326; }
+  .sock-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .sock { margin: 2px 0; } .sock-gem { color: #7fd3ff; font-weight: 600; } .sock-rune { color: #c37cf2; font-weight: 600; } .sock-other { color: #ff8000; font-weight: 600; }
+  .sock-fx { color: var(--text); font-size: 12px; } div.sock-fx { padding-left: 14px; }
   ol.order ul { margin: 0; padding-left: 4px; color: var(--text); }
   .rank { color: var(--muted); float: right; margin-left: 6px; }
   svg.board { display: block; width: 100%; height: auto; margin: 6px 0; }
@@ -322,11 +326,31 @@ function gearTab(body) {
         }
         ul.append(li);
       }
-      if (s.sockets.length) ul.append(el('li', 'muted', `◇ sockets: ${s.sockets.join(', ').replace(/_/g, ' ')}`));
       box.append(ul);
+      if (s.sockets.length) box.append(socketList(s.sockets));
       body.append(box);
     }
   }
+}
+
+// sockets as on the guide: "2× Skull — x18% Physical Damage Multiplier"; a condition + effect rune pair is one runeword
+function socketList(sockets) {
+  const wrap = el('div', 'sockets');
+  wrap.append(el('div', 'sock-h', 'Sockets'));
+  if (typeof sockets[0] === 'string') return wrap.append(el('div', 'muted', sockets.join(', ').replace(/_/g, ' '))), wrap; // build from before 1.2.3, until re-import
+  const runes = sockets.filter(s => s.kind === 'condition' || s.kind === 'effect');
+  if (runes.length) {
+    const row = el('div', 'sock');
+    row.append(el('span', 'sock-rune', `◆ Runewoord: ${runes.map(r => r.name).join(' + ')}`));
+    wrap.append(row);
+    for (const r of runes) wrap.append(el('div', 'sock-fx', `${r.name} (${r.kind === 'condition' ? 'voorwaarde' : 'effect'}): ${r.effect}`));
+  }
+  for (const s of sockets.filter(s => !runes.includes(s))) {
+    const row = el('div', 'sock');
+    row.append(el('span', s.kind === 'gem' ? 'sock-gem' : 'sock-other', `◆ ${s.count > 1 ? `${s.count}× ` : ''}${s.name}`), el('span', 'sock-fx', ` — ${s.effect}`));
+    wrap.append(row);
+  }
+  return wrap;
 }
 
 function itemBox(r) {
