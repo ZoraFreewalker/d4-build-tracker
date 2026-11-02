@@ -68,6 +68,15 @@ test('resolveProfileId accepts planner links and bare ids', async () => {
   assert.equal(await resolveProfileId('qeyb7t0x'), 'qeyb7t0x');
 });
 
+test('resolveProfileId finds the planner in old and new guide pages, not in related guides', async () => {
+  const page = html => async () => html;
+  const guide = 'https://maxroll.gg/d4/build-guides/x-guide';
+  assert.equal(await resolveProfileId(guide, page('<div data-d4-profile="qeyb7t0x"></div>')), 'qeyb7t0x');
+  // new layout (Oct 2026): related guides' embed_id comes first in the page data
+  assert.equal(await resolveProfileId(guide, page('"skills":{"embed_id":"other123"},"gutenbergBlock":[{"attributes":{"link":"https://maxroll.gg/d4/planner/mmfzmj0i#4"},"blockName":"maxroll/planner-page","plannerProfile":{"id":"mmfzmj0i","name":"Dance"}}]')), 'mmfzmj0i');
+  await assert.rejects(resolveProfileId(guide, page('<p>no planner</p>')), /Geen build-planner/);
+});
+
 test('buildFromProfile maps slots, duplicate rings and affix text', () => {
   const min = {
     affixes: { Str: { id: 1, attributes: [{ id: 4 }] }, Asp: { id: 2 } },

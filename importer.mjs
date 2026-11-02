@@ -26,9 +26,14 @@ export async function resolveProfileId(input, fetchText = getText) {
   }
   const planner = url.pathname.match(/^\/d4\/planner\/([a-z0-9]+)/i);
   if (planner) return planner[1];
-  const ids = [...(await fetchText(url.href)).matchAll(/data-d4-profile="([a-z0-9]+)"/gi)].map(m => m[1]);
-  if (!ids.length) throw new Error('Geen build-planner gevonden op die pagina.');
-  return ids[0];
+  const page = await fetchText(url.href);
+  // older guides embed the planner as data-d4-profile="id"; newer ones as a "maxroll/planner-page" block with
+  // "plannerProfile":{"id":"..."} (the page also lists related guides' embed_ids, so those are not used)
+  const id = page.match(/data-d4-profile="([a-z0-9]+)"/i)?.[1]
+    ?? page.match(/"plannerProfile":\{"id":"([a-z0-9]+)"/i)?.[1]
+    ?? page.match(/"link":"https:\/\/maxroll\.gg\/d4\/planner\/([a-z0-9]+)[^"]*"\},"blockName":"maxroll\/planner-page"/i)?.[1];
+  if (!id) throw new Error('Geen build-planner gevonden op die pagina.');
+  return id;
 }
 
 // Turns a Maxroll text template into tooltip-like text, e.g. "+[{value}||] Maximum Life" -> "+1500 Maximum Life".
